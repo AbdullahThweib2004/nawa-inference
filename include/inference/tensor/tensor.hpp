@@ -79,6 +79,10 @@ public:
     // Returns a 1-D copy with shape {numel()}.
     Tensor flatten() const;
 
+    // Matrix product, same as the free function matmul(*this, other) in ops.hpp.
+    // Lets layer code read naturally: input.matmul(weights).
+    Tensor matmul(const Tensor& other) const;
+
     void fill(float value);
 
     // Multi-line, PyTorch-like representation. Large tensors are summarized with "...".

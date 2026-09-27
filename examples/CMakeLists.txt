@@ -9,3 +9,4 @@ function(add_example name)
 endfunction()
 
 add_example(tensor_basics)
+add_example(ops_basics)

@@ -37,6 +37,29 @@ A lightweight neural network inference engine in C++, written from scratch. It i
 - `allclose(a, b, rtol, atol)` is the comparison to use in tests (numpy rule; different
   shapes → false).
 
+## Tensor ops design (`include/inference/tensor/ops.hpp`)
+
+- Free functions in `inference`. Every op returns a **new contiguous tensor** and never
+  modifies its inputs.
+- **Broadcasting** (NumPy rules: align from the right; dims equal, 1, or missing).
+  `broadcast_shape()` computes the output shape. Each input gets **broadcast strides**
+  with one entry per output dim: 0 for a missing or size-1 dim, otherwise its normal
+  stride. The output is walked in row-major order with an odometer-style index, and
+  each input offset is `sum(index[d] * bstride[d])`. Nothing is expanded or copied.
+  Identical shapes take a fast path: one linear loop, no index math.
+- Operators `+ - * /` are **element-wise** (like NumPy/PyTorch), never matmul. Division
+  by zero follows IEEE (inf/nan) and doesn't throw.
+- **matmul is deliberately naive**: 2-D only, i-j-k loop over raw pointers. It is
+  cache-unfriendly for `b` (the inner loop walks down a column). Leave it that way until
+  the optimization step, then change it with a benchmark before and after.
+  `Tensor::matmul(other)` forwards to the free function.
+- `transpose` is 2-D only and copies.
+- Reductions (`sum`, `max`, `mean`, `argmax`) take one axis (negative counts from the
+  end) and `keepdims`. A bad axis throws `std::out_of_range`. `sum(t)` and `max(t)` reduce
+  everything to a scalar. `max`/`argmax` ties keep the first occurrence.
+- **argmax returns indices as float values** (float32-only tensors). This is exact up
+  to 2^24. Revisit if an integer dtype is added.
+
 ## Workflow rules
 
 - Every new feature comes with GoogleTest tests in `tests/`.
@@ -71,8 +94,8 @@ To add a test file, create `tests/test_<name>.cpp` and add it to `inference_test
 
 1. Project scaffolding ✅
 2. Tensor core (storage, shape, strides, indexing) ✅
-3. **Tensor operations (elementwise, matmul, reductions, activations)** ← *current step*
-4. Layers (Linear, ReLU, Softmax, Conv2D, ...)
+3. Tensor operations (elementwise, matmul, reductions) ✅
+4. **Layers (Linear, ReLU, Softmax, Conv2D, ...)** ← *current step*
 5. Python training and weight export (PyTorch, MNIST)
 6. Model loading and runtime (file format, computational graph, executor)
 7. End-to-end MNIST inference

@@ -16,12 +16,13 @@ to train models and export their weights.
 
 ## Status
 
-Early development. The build scaffolding and the tensor data structure (shape, strides,
-element access, reshape) are done. There are no math operations yet.
+Early development. The tensor data structure and the basic math operations are done:
+matmul, transpose, element-wise ops with broadcasting, and reductions (sum/max/mean/argmax).
+There are no layers or model loading yet.
 
 - [x] 1. Project scaffolding
 - [x] 2. Tensor core
-- [ ] 3. Tensor operations
+- [x] 3. Tensor operations
 - [ ] 4. Layers
 - [ ] 5. Python training and weight export (MNIST)
 - [ ] 6. Model loading and runtime
@@ -51,10 +52,11 @@ cmake --build build -j                       # build
 ctest --test-dir build --output-on-failure   # run the tests
 ```
 
-Run an example (all example programs are built into `build/bin/`):
+Run the examples (all example programs are built into `build/bin/`):
 
 ```bash
-./build/bin/tensor_basics
+./build/bin/tensor_basics   # creating, indexing, reshaping and printing tensors
+./build/bin/ops_basics      # a manual Linear layer: y = x · W + b
 ```
 
 Debug build with AddressSanitizer + UndefinedBehaviorSanitizer:

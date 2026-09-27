@@ -9,6 +9,8 @@
 #include <stdexcept>
 #include <utility>
 
+#include "inference/tensor/ops.hpp"
+
 namespace inference {
 
 namespace {
@@ -267,6 +269,10 @@ Tensor Tensor::reshape(std::initializer_list<std::int64_t> new_shape) const {
 }
 
 Tensor Tensor::flatten() const { return reshape(Shape{numel()}); }
+
+// Qualified call: inside the class, plain `matmul` would find this member function
+// instead of the free function.
+Tensor Tensor::matmul(const Tensor& other) const { return inference::matmul(*this, other); }
 
 void Tensor::fill(float value) { std::fill(data_.begin(), data_.end(), value); }
 
