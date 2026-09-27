@@ -16,10 +16,11 @@ to train models and export their weights.
 
 ## Status
 
-Early development. Only the build and test scaffolding exists so far.
+Early development. The build scaffolding and the tensor data structure (shape, strides,
+element access, reshape) are done. There are no math operations yet.
 
 - [x] 1. Project scaffolding
-- [ ] 2. Tensor core
+- [x] 2. Tensor core
 - [ ] 3. Tensor operations
 - [ ] 4. Layers
 - [ ] 5. Python training and weight export (MNIST)
@@ -64,6 +65,7 @@ ctest --test-dir build-debug --output-on-failure
 |---------------------|---------|-----------------------------------------------|
 | `ENABLE_TESTS`      | ON      | Build the GoogleTest unit tests               |
 | `ENABLE_BENCHMARKS` | OFF     | Build the benchmarks                          |
+| `BUILD_EXAMPLES`    | ON      | Build the example programs in `examples/`     |
 | `ENABLE_SANITIZERS` | OFF     | ASan + UBSan in Debug builds (GCC/Clang only) |
 
 ## Project layout

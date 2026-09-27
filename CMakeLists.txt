@@ -11,6 +11,7 @@ project(inference
 # ---------------------------------------------------------------------------
 option(ENABLE_TESTS "Build the GoogleTest unit tests" ON)
 option(ENABLE_BENCHMARKS "Build the benchmarks" OFF)
+option(BUILD_EXAMPLES "Build the example programs" ON)
 option(ENABLE_SANITIZERS "Enable AddressSanitizer + UBSan in Debug builds (GCC/Clang)" OFF)
 
 # ---------------------------------------------------------------------------
@@ -62,6 +63,7 @@ endif()
 # ---------------------------------------------------------------------------
 add_library(inference_core STATIC
     src/version.cpp
+    src/tensor/tensor.cpp
 )
 target_include_directories(inference_core PUBLIC
     ${PROJECT_SOURCE_DIR}/include
@@ -79,6 +81,10 @@ target_link_libraries(inference_core
 if(ENABLE_TESTS)
     enable_testing()  # creates CTestTestfile.cmake so `ctest` works in build/
     add_subdirectory(tests)
+endif()
+
+if(BUILD_EXAMPLES)
+    add_subdirectory(examples)
 endif()
 
 if(ENABLE_BENCHMARKS)

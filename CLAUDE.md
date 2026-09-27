@@ -14,9 +14,28 @@ A lightweight neural network inference engine in C++, written from scratch. It i
 - Public headers go in `include/inference/<module>/`. Implementations go in `src/<module>/`.
 - **No external math libraries** (no Eigen, BLAS, etc.). All core math is implemented by hand.
   GoogleTest is the only third-party dependency, and it is used only for tests.
-- The default tensor layout is **float32, row-major (C-order), contiguous** storage.
 - The build must have zero warnings (`-Wall -Wextra -Wpedantic -Werror` / `/W4 /WX`).
 - Format code with `.clang-format` (Google-based, 4-space indent, 100 columns).
+
+## Tensor design (`include/inference/tensor/tensor.hpp`)
+
+- `using Shape = std::vector<std::size_t>;`. The empty shape `{}` is a scalar with `numel() == 1`.
+- **float32 only.**
+- **Contiguous and row-major** (C-order) always.
+- **Owning:** every `Tensor` owns its data. There are no views and no shared storage.
+  Copying is a deep copy. Moving is cheap (the default move). `reshape()` and `flatten()`
+  return new tensors (copies).
+- **Strides are in elements, not bytes.** They are computed from the shape
+  (`compute_strides`) and stored. The element at `{i0, i1, ...}` is at offset
+  `sum(ik * strides[k])`.
+- A dimension of size 0 is rejected.
+- Storage is a private `std::vector<float>`, reached only through the class API (`data()`,
+  `at()`, ...). It will be swapped for 64-byte-aligned memory in the optimization step, so
+  nothing outside `Tensor` may depend on it being a `std::vector`.
+- Errors: `std::invalid_argument` for bad shapes or data sizes, and `std::out_of_range` for
+  bad indices or dimensions. Messages include the shapes/indices involved.
+- `allclose(a, b, rtol, atol)` is the comparison to use in tests (numpy rule; different
+  shapes → false).
 
 ## Workflow rules
 
@@ -50,9 +69,9 @@ To add a test file, create `tests/test_<name>.cpp` and add it to `inference_test
 
 ## Roadmap
 
-1. **Project scaffolding** ← *current step*
-2. Tensor core (storage, shape, strides, indexing)
-3. Tensor operations (elementwise, matmul, reductions, activations)
+1. Project scaffolding ✅
+2. Tensor core (storage, shape, strides, indexing) ✅
+3. **Tensor operations (elementwise, matmul, reductions, activations)** ← *current step*
 4. Layers (Linear, ReLU, Softmax, Conv2D, ...)
 5. Python training and weight export (PyTorch, MNIST)
 6. Model loading and runtime (file format, computational graph, executor)

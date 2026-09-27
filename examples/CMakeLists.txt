@@ -1,0 +1,2 @@
+add_executable(tensor_basics tensor_basics.cpp)
+target_link_libraries(tensor_basics PRIVATE inference_core inference_warnings)
