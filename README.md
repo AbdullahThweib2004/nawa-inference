@@ -51,6 +51,12 @@ cmake --build build -j                       # build
 ctest --test-dir build --output-on-failure   # run the tests
 ```
 
+Run an example (all example programs are built into `build/bin/`):
+
+```bash
+./build/bin/tensor_basics
+```
+
 Debug build with AddressSanitizer + UndefinedBehaviorSanitizer:
 
 ```bash

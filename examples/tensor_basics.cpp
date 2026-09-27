@@ -1,4 +1,4 @@
-// Creates a few tensors and prints them. Run: ./build/examples/tensor_basics
+// Creates a few tensors and prints them. Run: ./build/bin/tensor_basics
 
 #include <iostream>
 #include <numeric>
