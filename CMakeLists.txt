@@ -65,6 +65,8 @@ add_library(inference_core STATIC
     src/version.cpp
     src/tensor/tensor.cpp
     src/tensor/ops.cpp
+    src/layers/linear.cpp
+    src/layers/activations.cpp
 )
 target_include_directories(inference_core PUBLIC
     ${PROJECT_SOURCE_DIR}/include

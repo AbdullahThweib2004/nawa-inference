@@ -1,6 +1,7 @@
 #include "inference/tensor/ops.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -301,6 +302,10 @@ Tensor operator/(float s, const Tensor& b) { return div(s, b); }
 
 Tensor operator-(const Tensor& t) {
     return unary_op(t, [](float x) { return -x; });
+}
+
+Tensor exp(const Tensor& t) {
+    return unary_op(t, [](float x) { return std::exp(x); });
 }
 
 // ---------------------------------------------------------------------------

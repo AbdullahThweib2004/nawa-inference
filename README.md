@@ -16,14 +16,18 @@ to train models and export their weights.
 
 ## Status
 
-Early development. The tensor data structure and the basic math operations are done:
-matmul, transpose, element-wise ops with broadcasting, and reductions (sum/max/mean/argmax).
-There are no layers or model loading yet.
+Early development. Done so far:
+
+- the tensor data structure
+- math operations: matmul, transpose, element-wise ops with broadcasting, reductions
+- inference layers: Linear, ReLU, Sigmoid, Softmax
+
+Model loading and trained weights are next.
 
 - [x] 1. Project scaffolding
 - [x] 2. Tensor core
 - [x] 3. Tensor operations
-- [ ] 4. Layers
+- [x] 4. Layers
 - [ ] 5. Python training and weight export (MNIST)
 - [ ] 6. Model loading and runtime
 - [ ] 7. End-to-end MNIST inference
@@ -57,6 +61,7 @@ Run the examples (all example programs are built into `build/bin/`):
 ```bash
 ./build/bin/tensor_basics   # creating, indexing, reshaping and printing tensors
 ./build/bin/ops_basics      # a manual Linear layer: y = x · W + b
+./build/bin/mlp_forward     # a tiny 2-layer network built from Layer objects
 ```
 
 Debug build with AddressSanitizer + UndefinedBehaviorSanitizer:

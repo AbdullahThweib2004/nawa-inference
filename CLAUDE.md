@@ -60,6 +60,28 @@ A lightweight neural network inference engine in C++, written from scratch. It i
 - **argmax returns indices as float values** (float32-only tensors). This is exact up
   to 2^24. Revisit if an integer dtype is added.
 
+## Layers design (`include/inference/layers/`)
+
+- **`Layer` interface** (`layer.hpp`): `virtual Tensor forward(const Tensor&) const = 0`,
+  `virtual std::string name() const = 0`, and `virtual std::size_t num_parameters() const`
+  (defaults to 0). It has a virtual destructor, and it is **non-copyable but movable**.
+  Layers are owned through `std::unique_ptr<Layer>` (the model in step 6 holds a
+  `std::vector<std::unique_ptr<Layer>>`). `forward` is `const`: inference layers have no
+  mutable state. Inference only, with no gradients.
+- **Linear weight convention: `weight` is `{in_features, out_features}`**, and
+  `forward` computes `y = x · W + b` with `x` shaped `{batch, in_features}`. **This is the
+  transpose of PyTorch's `nn.Linear.weight` (`{out, in}`).** The Python exporter must
+  transpose PyTorch weights (`weight.T`) before saving. The bias is optional, shape
+  `{out_features}`, and broadcast over the batch.
+- **Numerical stability:**
+  - Sigmoid uses `1/(1+e^-x)` for x ≥ 0 and `e^x/(1+e^x)` for x < 0, so `exp` never gets a
+    positive argument. ±1000 gives exactly 0/1 with no NaN or inf.
+  - Softmax subtracts the max along the axis before `exp` (built from
+    `max(keepdims)`, `exp`, `sum(keepdims)` and broadcasting). The largest exponent is
+    `exp(0) = 1`, so there is no overflow and the denominator is ≥ 1.
+- Activations (ReLU, Sigmoid, Softmax) keep the input shape and have no parameters.
+  Softmax takes an `axis` (default -1).
+
 ## Workflow rules
 
 - Every new feature comes with GoogleTest tests in `tests/`.
@@ -95,8 +117,8 @@ To add a test file, create `tests/test_<name>.cpp` and add it to `inference_test
 1. Project scaffolding ✅
 2. Tensor core (storage, shape, strides, indexing) ✅
 3. Tensor operations (elementwise, matmul, reductions) ✅
-4. **Layers (Linear, ReLU, Softmax, Conv2D, ...)** ← *current step*
-5. Python training and weight export (PyTorch, MNIST)
+4. Layers (Linear, ReLU, Sigmoid, Softmax) ✅
+5. **Python training and weight export (PyTorch, MNIST)** ← *current step*
 6. Model loading and runtime (file format, computational graph, executor)
 7. End-to-end MNIST inference
 8. Benchmarking infrastructure

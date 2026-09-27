@@ -67,6 +67,10 @@ Tensor operator/(float s, const Tensor& b);
 
 Tensor operator-(const Tensor& t);
 
+// e^x for every element. Large inputs overflow to inf (IEEE); callers that need
+// stability, like Softmax, shift their inputs first.
+Tensor exp(const Tensor& t);
+
 // ---------------------------------------------------------------------------
 // Reductions
 // ---------------------------------------------------------------------------

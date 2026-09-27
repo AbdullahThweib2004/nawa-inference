@@ -367,3 +367,13 @@ TEST(Reduce, TotalReductions) {
     EXPECT_TRUE(allclose(max(Tensor({3}, {-5, -2, -9})), Tensor::scalar(-2.0f)));
     EXPECT_TRUE(allclose(sum(Tensor::scalar(4.0f)), Tensor::scalar(4.0f)));
 }
+
+// ---------------------------------------------------------------------------
+// exp
+// ---------------------------------------------------------------------------
+
+TEST(Elementwise, Exp) {
+    const Tensor x({2, 2}, {0.0f, 1.0f, -1.0f, 2.0f});
+    EXPECT_TRUE(allclose(exp(x), Tensor({2, 2}, {1.0f, 2.7182817f, 0.36787945f, 7.389056f})));
+    EXPECT_TRUE(std::isinf(exp(Tensor::scalar(1000.0f)).data()[0]));  // IEEE overflow
+}

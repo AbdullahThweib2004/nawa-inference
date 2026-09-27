@@ -39,6 +39,7 @@ add_executable(inference_tests
     test_version.cpp
     test_tensor.cpp
     test_ops.cpp
+    test_layers.cpp
 )
 target_link_libraries(inference_tests PRIVATE
     inference_core

@@ -10,3 +10,4 @@ endfunction()
 
 add_example(tensor_basics)
 add_example(ops_basics)
+add_example(mlp_forward)
