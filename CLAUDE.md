@@ -42,6 +42,12 @@ To add a test file, create `tests/test_<name>.cpp` and add it to `inference_test
 `tests/CMakeLists.txt`. To add a source file, add it to `inference_core` in the root
 `CMakeLists.txt`.
 
+## Git workflow
+
+- Repository: https://github.com/AbdullahThweib2004/nawa-inference (remote `origin`, branch `main`).
+- For every roadmap step: finish the step → all tests pass → commit → `git push`.
+- Never commit build output, model binaries, or secrets (see `.gitignore`).
+
 ## Roadmap
 
 1. **Project scaffolding** ← *current step*
