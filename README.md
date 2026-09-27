@@ -1,5 +1,7 @@
 # Nawa
 
+[![CI](https://github.com/AbdullahThweib2004/nawa-inference/actions/workflows/ci.yml/badge.svg)](https://github.com/AbdullahThweib2004/nawa-inference/actions/workflows/ci.yml)
+
 A lightweight neural network inference engine built from scratch in C++.
 
 ## Why
