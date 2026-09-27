@@ -1,0 +1,44 @@
+# --- Build output ---
+build/
+build-*/
+cmake-build-*/
+out/
+CMakeCache.txt
+CMakeFiles/
+CMakeUserPresets.json
+compile_commands.json
+Testing/
+
+# --- Compiled artifacts ---
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.dylib
+*.dll
+*.exe
+
+# --- Editors / tools ---
+.vscode/
+.idea/
+.cache/
+*.swp
+.DS_Store
+
+# --- Python ---
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+*.egg-info/
+
+# --- Datasets and model files (large, regenerable) ---
+data/
+*.bin
+*.pt
+*.pth
+*.onnx
+*.npy
+*.npz
