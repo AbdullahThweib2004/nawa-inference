@@ -21,7 +21,7 @@ jobs:
             cc: clang
             cxx: clang++
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install build tools
         run: sudo apt-get update && sudo apt-get install -y cmake ninja-build
@@ -44,7 +44,7 @@ jobs:
     name: Debug + ASan/UBSan (gcc)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install build tools
         run: sudo apt-get update && sudo apt-get install -y cmake ninja-build
