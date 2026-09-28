@@ -70,6 +70,8 @@ add_library(inference_core STATIC
     src/model/binary_io.cpp
     src/model/tensor_io.cpp
     src/model/model.cpp
+    src/data/idx.cpp
+    src/data/digit_preprocess.cpp
 )
 target_include_directories(inference_core PUBLIC
     ${PROJECT_SOURCE_DIR}/include
@@ -82,12 +84,43 @@ target_link_libraries(inference_core
 )
 
 # ---------------------------------------------------------------------------
+# Image loading: stb_image (third-party, image decoding only; not math)
+# ---------------------------------------------------------------------------
+include(FetchContent)
+# The single header, pinned to a commit and verified by hash: if the file ever changes,
+# the build fails instead of silently compiling different code.
+FetchContent_Declare(
+    stb_image
+    URL      https://raw.githubusercontent.com/nothings/stb/2c980bb59875b0d32144a71867fbdebb2f77cd20/stb_image.h
+    URL_HASH SHA256=594c2fe35d49488b4382dbfaec8f98366defca819d916ac95becf3e75f4200b3
+    DOWNLOAD_NO_EXTRACT TRUE
+)
+FetchContent_MakeAvailable(stb_image)
+
+# stb_image's implementation, compiled once, with warnings disabled for this target only.
+add_library(stb_image_impl STATIC src/data/stb_image_impl.cpp)
+# SYSTEM: code that includes <stb_image.h> doesn't get warnings from inside the header.
+target_include_directories(stb_image_impl SYSTEM PUBLIC ${stb_image_SOURCE_DIR})
+target_compile_options(stb_image_impl PRIVATE $<IF:$<CXX_COMPILER_ID:MSVC>,/w,-w>)
+target_link_libraries(stb_image_impl PRIVATE inference_sanitizers)
+
+# Our image loader: normal strict warnings. Separate from inference_core, which stays free
+# of third-party code; only the CLI and the tests link it.
+add_library(nawa_image STATIC src/data/image_io.cpp)
+target_link_libraries(nawa_image
+    PUBLIC inference_core
+    PRIVATE inference_warnings stb_image_impl
+)
+
+# ---------------------------------------------------------------------------
 # Subprojects
 # ---------------------------------------------------------------------------
 if(ENABLE_TESTS)
     enable_testing()  # creates CTestTestfile.cmake so `ctest` works in build/
     add_subdirectory(tests)
 endif()
+
+add_subdirectory(tools)
 
 if(BUILD_EXAMPLES)
     add_subdirectory(examples)

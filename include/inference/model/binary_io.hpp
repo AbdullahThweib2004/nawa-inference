@@ -15,6 +15,12 @@ namespace inference {
 // The file formats are little-endian, and the readers copy bytes straight into integers and
 // floats. That is only correct on a little-endian machine (x86-64, ARM64 in its usual mode).
 // A big-endian port would need to byte-swap every field.
+//
+// Other formats don't necessarily match the CPU. MNIST's IDX files store their header
+// integers BIG-endian (most significant byte first), so the IDX reader (src/data/idx.cpp)
+// copies each field with memcpy exactly like BinaryReader does and then reverses its bytes
+// explicitly. Because of this static_assert, "reverse the bytes" is always the right
+// conversion from big-endian to native order.
 static_assert(std::endian::native == std::endian::little,
               "Nawa's file readers assume a little-endian CPU (the file format is little-endian)");
 
@@ -58,6 +64,9 @@ public:
     std::uint64_t read_u64(std::string_view what);
     std::int32_t read_i32(std::string_view what);
     float read_f32(std::string_view what);
+
+    // Returns a view of the next n raw bytes (valid while the underlying buffer lives).
+    std::span<const std::byte> read_bytes(std::size_t n, std::string_view what);
 
     // Reads `count` consecutive float32 values. The size is checked BEFORE allocating, so a
     // corrupt count can't trigger a huge allocation.

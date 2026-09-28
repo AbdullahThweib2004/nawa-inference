@@ -90,6 +90,13 @@ std::int32_t BinaryReader::read_i32(std::string_view what) {
 }
 float BinaryReader::read_f32(std::string_view what) { return read_scalar<float>(what); }
 
+std::span<const std::byte> BinaryReader::read_bytes(std::size_t n, std::string_view what) {
+    require(n, what);
+    const std::span<const std::byte> bytes = data_.subspan(offset_, n);
+    offset_ += n;
+    return bytes;
+}
+
 std::vector<float> BinaryReader::read_f32_array(std::size_t count, std::string_view what) {
     if (count > remaining() / sizeof(float)) {
         // Also covers counts so large that count * 4 would overflow.

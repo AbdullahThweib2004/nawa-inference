@@ -37,7 +37,9 @@ __pycache__/
 *.egg-info/
 
 # --- Datasets and model files (large, regenerable) ---
-data/
+# Anchored with a leading / so it only matches the dataset folder at the repo root, not
+# source folders like include/inference/data/ or src/data/.
+/data/
 models/*.pt
 *.bin
 *.pt

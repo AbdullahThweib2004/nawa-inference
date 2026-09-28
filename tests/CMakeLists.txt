@@ -41,9 +41,11 @@ add_executable(inference_tests
     test_ops.cpp
     test_layers.cpp
     test_model.cpp
+    test_data.cpp
 )
 target_link_libraries(inference_tests PRIVATE
     inference_core
+    nawa_image
     inference_warnings
     GTest::gtest_main  # provides main(), so test files contain only TEST()s
 )
@@ -53,6 +55,7 @@ target_link_libraries(inference_tests PRIVATE
 target_compile_definitions(inference_tests PRIVATE
     NAWA_FIXTURES_DIR="${PROJECT_SOURCE_DIR}/tests/fixtures"
     NAWA_MODELS_DIR="${PROJECT_SOURCE_DIR}/models"
+    NAWA_SOURCE_DIR="${PROJECT_SOURCE_DIR}"
 )
 
 # Asks the test binary for its list of TEST()s after it is built, and registers

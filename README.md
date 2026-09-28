@@ -23,8 +23,9 @@ Early development. Done so far:
 - inference layers: Linear, ReLU, Sigmoid, Softmax
 - a trained MNIST model exported to the [Nawa model format](docs/model_format.md)
 - a C++ model loader and runtime that matches PyTorch's outputs (max error < 1e-6)
+- the `nawa` command-line tool: 97.15% on the MNIST test set, plus predictions on your own images
 
-End-to-end MNIST inference tooling is next.
+Benchmarking and CPU optimization are next.
 
 - [x] 1. Project scaffolding
 - [x] 2. Tensor core
@@ -32,7 +33,7 @@ End-to-end MNIST inference tooling is next.
 - [x] 4. Layers
 - [x] 5. Python training and weight export (MNIST)
 - [x] 6. Model loading and runtime
-- [ ] 7. End-to-end MNIST inference
+- [x] 7. End-to-end MNIST inference
 - [ ] 8. Benchmarking
 - [ ] 9. Optimization (threads, SIMD, INT8)
 - [ ] 10. Extensions
@@ -65,6 +66,7 @@ Run the examples (all example programs are built into `build/bin/`):
 ./build/bin/ops_basics      # a manual Linear layer: y = x · W + b
 ./build/bin/mlp_forward     # a tiny 2-layer network built from Layer objects
 ./build/bin/predict_digits  # load models/mnist_mlp.nawa and classify 10 test digits
+./build/bin/nawa --help       # the command-line tool (see below)
 ```
 
 Debug build with AddressSanitizer + UndefinedBehaviorSanitizer:
@@ -74,6 +76,44 @@ cmake -S . -B build-debug -DCMAKE_BUILD_TYPE=Debug -DENABLE_SANITIZERS=ON
 cmake --build build-debug -j
 ctest --test-dir build-debug --output-on-failure
 ```
+
+## Using the `nawa` CLI
+
+After building, the tool is at `build/bin/nawa`:
+
+```bash
+# Model summary: layers, shapes, parameter count
+./build/bin/nawa info models/mnist_mlp.nawa
+
+# Accuracy, confusion matrix, per-digit accuracy and speed on the 10,000 MNIST test images
+# (data/MNIST/raw is created by python/train.py)
+./build/bin/nawa eval models/mnist_mlp.nawa --mnist data/MNIST/raw --batch 256
+
+# Classify an image; --show draws the 28x28 model input as ASCII art
+./build/bin/nawa predict models/mnist_mlp.nawa examples/images/digit2_inverted.png --show
+
+# Same image without MNIST-style preprocessing, for comparison
+./build/bin/nawa predict models/mnist_mlp.nawa examples/images/digit2_inverted.png --no-preprocess
+```
+
+`examples/images/` has three demo images made from MNIST test digits: `digit7_mnist.png`
+(unchanged), `digit2_inverted.png` (dark on light) and `digit4_offcenter.png` (small, in a
+corner). With preprocessing all three are classified correctly; with `--no-preprocess` only
+the first one is.
+
+### Draw your own digit
+
+1. Draw a single digit in any paint program: a dark pen on a white background (or white on
+   black), with **thick strokes**. MNIST digits are about 2-3 px thick at 28×28, so at
+   280×280 use a brush around 20-25 px.
+2. Fill most of the canvas with one digit and leave a margin. Nothing else should be in the
+   picture.
+3. Save it as PNG (JPEG and BMP work too; transparent backgrounds are treated as white).
+4. Run `./build/bin/nawa predict models/mnist_mlp.nawa my_digit.png --show`.
+
+The preprocessing inverts dark-on-light images, crops to the digit, scales it to 20 px and
+centers it the way MNIST does. `--show` lets you check what the model actually sees. Photos
+with shadows or uneven lighting may need cropping and more contrast first.
 
 ## Train and export (Python)
 
