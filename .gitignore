@@ -23,6 +23,7 @@ Testing/
 .vscode/
 .idea/
 .cache/
+.claude/settings.local.json
 *.swp
 .DS_Store
 

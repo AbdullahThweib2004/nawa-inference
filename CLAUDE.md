@@ -130,6 +130,9 @@ To add a test file, create `tests/test_<name>.cpp` and add it to `inference_test
 - Repository: https://github.com/AbdullahThweib2004/nawa-inference (remote `origin`, branch `main`).
 - For every roadmap step: finish the step → all tests pass → commit → `git push`.
 - Never commit build output, model binaries, or secrets (see `.gitignore`).
+- No co-author trailers or AI attribution lines in commit messages or PR descriptions
+  (no `Co-Authored-By:` for AI tools, no "Generated with ..." lines). `.claude/settings.json`
+  sets `attribution` to empty strings to enforce this.
 
 ## Roadmap
 
