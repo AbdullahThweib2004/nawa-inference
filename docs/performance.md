@@ -159,6 +159,76 @@ allocations and extra passes showed up, dropped from 13.8 to 8.9 µs.
 **Memory:** peak RSS after a batch-256 predict fell from 9.1 MiB (baseline) to 7.4 MiB.
 The weights are held twice, once row-major for `Linear::weight()` and once packed (+398 KB).
 
+### 9.5: multithreading
+
+- **`ThreadPool`** (`runtime/thread_pool.hpp`):
+  - Fixed workers created once; the caller participates as thread 0.
+  - `parallel_for` with **static round-robin chunks** (the same thread always gets the same
+    part of the weights, which keeps them in its core's private L2).
+  - A job queue with a condition variable; exceptions propagate to the caller; clean shutdown.
+  - Nested calls run inline. Allocation-free in steady state.
+- **Parallel GEMM:**
+  - Split over **M** (row blocks in multiples of 6) when there are at least 6 rows per
+    thread, otherwise over the **N panels** (16 columns each).
+  - Each output is computed by one thread with the same k-ordered FMAs, so results are
+    **bit-identical for 1, 2, 3, 4 and 8 threads** (tested for GEMM shapes and full
+    `predict`).
+- **Threads:** `NAWA_NUM_THREADS`, default = physical cores (P-cores on hybrid CPUs), capped
+  by the process's CPU affinity. Here: *4 threads (4 physical cores, 8 logical CPUs)*.
+- **`ENABLE_TSAN`:** ThreadSanitizer, clean on GCC and Clang, now a CI job. A deliberately
+  racy test program was flagged, so TSan really is active.
+- **Minimum work for threads: 2²² ≈ 4.2M multiply-adds**, measured (forced parallel,
+  K = 784, N = 128, wall time):
+
+  | M | multiply-adds | 1 thread | 4 threads |
+  |---|---|---|---|
+  | 1 | 100k | 5.8 µs | 6.0 µs |
+  | 4 | 401k | 10.5 µs | 18.1 µs |
+  | 16 | 1.6M | 43.6 µs | 41.6 µs |
+  | 64 | 6.4M | 161 µs | 113 µs |
+  | 256 | 25.7M | 643 µs | 379 µs |
+
+  So batch 1 and the small second layer stay single-threaded. Only the batch-256 first
+  layer runs in parallel.
+- **A spin-wait before sleeping was tried and removed.** Workers spinning up to ~1 ms after
+  each job gave no measurable gain (spin 0 / 500 / 2,000 / 20,000 iterations were all within
+  noise). It only burned power that the working core needed.
+
+**Scaling (wall time, medians, `step9_5_threads.json`; speedup and parallel efficiency):**
+
+| | 1 thread | 2 | 4 | 8 (with hyperthreads) |
+|---|---|---|---|---|
+| `predict` batch 1 | 7.9 µs | 9.4 µs (0.84×) | 8.1 µs (0.98×) | 8.0 µs (0.99×) |
+| `predict` batch 256 | 705 µs | 465 µs (1.52×, 76%) | 488 µs (1.44×, 36%) | 423 µs (1.67×, 21%) |
+| GEMM 256×784×128 | 623 µs | 400 µs (1.56×, 78%) | 331 µs (1.88×, 47%) | 277 µs (2.25×, 28%) |
+| GEMM 1024³ | 26.6 ms | 15.5 ms (1.72×, 86%) | 11.0 ms (2.42×, 61%) | 12.2 ms (2.18×, 27%) |
+
+Batch 1 doesn't change: it stays on one thread by design. Its cycles per image are identical
+in 9.4 and 9.5 (25.2k), and the wall differences are noise.
+
+**Where scaling stops, and why (`perf stat`, GEMM 1024³):**
+
+| threads | CPUs busy | clock per busy CPU | IPC per busy CPU |
+|---|---|---|---|
+| 1 | 1.00 | 3.61 GHz | 3.66 |
+| 2 | 1.98 | 2.08 GHz | 3.70 |
+| 4 | 3.70 | 1.46 GHz | 3.52 |
+| 8 | 6.68 | 1.40 GHz | 2.03 |
+
+- **Each core does the same work per cycle at every thread count** (IPC ≈ 3.6).
+- **The clock collapses.** The i7-11370H is a 35 W laptop chip, and 4 cores running AVX2
+  FMAs exceed its power budget, so it lowers every core's frequency. Total cycles per second
+  grow only from 3.6 G (1 thread) to about 5.4 G (4 threads), which caps the speedup at
+  ~1.5-2.4× depending on thermal state.
+- **8 threads add nothing,** because two hyperthreads share one core's FMA units (IPC per
+  thread halves).
+- **Batch 256 `predict` scales less than its GEMM,** because the rest of `predict`
+  (preprocess, second layer, softmax: about 20% of the single-thread time) stays
+  single-threaded. That's Amdahl's law.
+
+On a desktop CPU or a server with a bigger power budget, the same code should scale much
+closer to the core count.
+
 ### Known regression in 9.2: broadcasting got slower
 
 **Fixed in 9.4** (incremental offsets and row/column fast paths).

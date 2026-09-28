@@ -53,6 +53,13 @@ private:
     std::vector<float> data_;
 };
 
+// gemm() uses the default thread pool (runtime/thread_pool.hpp) only when the product has
+// at least parallel_threshold_macs() multiply-adds (M*K*N); smaller ones run on the calling
+// thread, because waking other threads costs more than it saves. The default is measured in
+// docs/performance.md; NAWA_MIN_PARALLEL_MACS overrides it (read once), for experiments.
+inline constexpr std::size_t kMinParallelMacs = std::size_t{1} << 22;  // ~4.2M
+std::size_t parallel_threshold_macs();
+
 // Work done on each element of C as it is written, while it is still in a register
 // ("fused" into the GEMM instead of separate passes over memory):
 //     c = (A·B)[i][j] + bias[j]        if bias is set  (a Linear layer's bias)

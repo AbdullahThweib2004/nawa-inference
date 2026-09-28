@@ -10,7 +10,9 @@
 #include "alloc_counter.hpp"
 #include "bench_common.hpp"
 #include "inference/model/model.hpp"
+#include "inference/runtime/thread_pool.hpp"
 #include "inference/runtime/workspace.hpp"
+#include "inference/tensor/gemm.hpp"
 
 using namespace inference;
 using nawa_bench::random_pixels;
@@ -200,5 +202,97 @@ void BM_PredictLatency(benchmark::State& state) {
     state.counters["p99_us"] = percentile(0.99);
 }
 BENCHMARK(BM_PredictLatency)->UseManualTime()->Unit(benchmark::kMicrosecond);
+
+// ---------------------------------------------------------------------------
+// Multithreading (stage 9.5). WALL time (UseRealTime): CPU cycles summed over threads would
+// hide the speedup. Args: threads, batch.
+// ---------------------------------------------------------------------------
+
+void BM_PredictThreads(benchmark::State& state) {
+    const auto threads = static_cast<std::size_t>(state.range(0));
+    const auto batch = static_cast<std::size_t>(state.range(1));
+    set_num_threads(threads);
+    const Tensor raw = random_pixels({batch, 784});
+    Workspace workspace;
+    (void)model().predict(raw, workspace);
+    for (auto _ : state) {
+        const Tensor& probs = model().predict(raw, workspace);
+        benchmark::DoNotOptimize(probs.data());
+        benchmark::ClobberMemory();
+    }
+    state.SetItemsProcessed(state.iterations() * static_cast<std::int64_t>(batch));
+    set_num_threads(default_num_threads());
+}
+BENCHMARK(BM_PredictThreads)
+    ->ArgNames({"threads", "batch"})
+    ->ArgsProduct({{1, 2, 4, 8}, {1, 256}})
+    ->UseRealTime()
+    ->Unit(benchmark::kMicrosecond);
+
+void BM_PredictLatencyThreads(benchmark::State& state) {
+    using Clock = std::chrono::steady_clock;
+    const auto threads = static_cast<std::size_t>(state.range(0));
+    set_num_threads(threads);
+    const Tensor raw = random_pixels({1, 784});
+    Workspace workspace;
+    (void)model().predict(raw, workspace);
+    std::vector<double> micros;
+    micros.reserve(1 << 20);
+    for (auto _ : state) {
+        const auto start = Clock::now();
+        const Tensor& probs = model().predict(raw, workspace);
+        benchmark::DoNotOptimize(probs.data());
+        benchmark::ClobberMemory();
+        const double seconds = std::chrono::duration<double>(Clock::now() - start).count();
+        state.SetIterationTime(seconds);
+        if (micros.size() < micros.capacity()) micros.push_back(seconds * 1e6);
+    }
+    set_num_threads(default_num_threads());
+    if (micros.empty()) return;
+    const auto percentile = [&](double p) {
+        const auto k = static_cast<std::size_t>(p * static_cast<double>(micros.size() - 1));
+        std::nth_element(micros.begin(), micros.begin() + static_cast<std::ptrdiff_t>(k),
+                         micros.end());
+        return micros[k];
+    };
+    state.counters["p50_us"] = percentile(0.50);
+    state.counters["p90_us"] = percentile(0.90);
+    state.counters["p99_us"] = percentile(0.99);
+}
+BENCHMARK(BM_PredictLatencyThreads)
+    ->ArgName("threads")
+    ->Arg(1)
+    ->Arg(2)
+    ->Arg(4)
+    ->Arg(8)
+    ->UseManualTime()
+    ->Unit(benchmark::kMicrosecond);
+
+// The GEMM alone (packed B), wall time, for scaling beyond the small MNIST layers.
+void BM_GemmThreads(benchmark::State& state) {
+    const auto threads = static_cast<std::size_t>(state.range(0));
+    const auto M = static_cast<std::size_t>(state.range(1));
+    const auto K = static_cast<std::size_t>(state.range(2));
+    const auto N = static_cast<std::size_t>(state.range(3));
+    set_num_threads(threads);
+    const Tensor a = random_tensor({M, K}, 1);
+    const Tensor b = random_tensor({K, N}, 2);
+    const PackedMatrix packed = PackedMatrix::pack(b.data(), K, N);
+    Tensor c({M, N});
+    for (auto _ : state) {
+        gemm(a.data(), M, packed, c.data());
+        benchmark::DoNotOptimize(c.data());
+        benchmark::ClobberMemory();
+    }
+    state.counters["GFLOPS"] = benchmark::Counter(2.0 * static_cast<double>(M * K * N) / 1e9,
+                                                  benchmark::Counter::kIsIterationInvariantRate);
+    set_num_threads(default_num_threads());
+}
+BENCHMARK(BM_GemmThreads)
+    ->ArgNames({"threads", "M", "K", "N"})
+    ->ArgsProduct({{1, 2, 4, 8}, {1024}, {1024}, {1024}})
+    ->ArgsProduct({{1, 2, 4, 8}, {1, 4, 16, 64, 256}, {784}, {128}})
+    ->UseRealTime()
+    ->Unit(benchmark::kMicrosecond);
 
 }  // namespace

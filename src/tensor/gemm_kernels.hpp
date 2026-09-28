@@ -35,7 +35,10 @@ void gemm_ikj(const float* a, std::size_t M, std::size_t K, std::size_t N, const
 // C {M,N} = A {M,K} · B, with B in the 16-column panel layout (see gemm.hpp).
 // `a_pack` must hold kAvx2APackFloats floats.
 // `bias` (N values, or nullptr) and `relu` form the epilogue (see GemmEpilogue in gemm.hpp).
+// Only columns [col_begin, col_end) of C are computed; col_begin must be a multiple of kNR.
+// (Threads split the work by rows, by passing a sub-range of A and C, or by column ranges.)
 void gemm_avx2(const float* a, std::size_t M, std::size_t K, std::size_t N, const float* b_panels,
-               float* c, float* a_pack, const float* bias, bool relu);
+               float* c, float* a_pack, const float* bias, bool relu, std::size_t col_begin,
+               std::size_t col_end);
 
 }  // namespace inference::detail

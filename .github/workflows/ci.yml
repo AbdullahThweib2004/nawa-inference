@@ -76,6 +76,36 @@ jobs:
           UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
         run: ctest --test-dir build --output-on-failure
 
+  tsan:
+    name: ThreadSanitizer (clang)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install build tools
+        run: sudo apt-get update && sudo apt-get install -y cmake ninja-build clang
+
+      # Same kernel setting as for ASan: newer kernels randomize more address bits than the
+      # sanitizer runtimes support.
+      - name: Adjust ASLR for ThreadSanitizer
+        run: sudo sysctl vm.mmap_rnd_bits=28
+
+      - name: Configure
+        run: >
+          cmake -S . -B build -G Ninja
+          -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          -DENABLE_TSAN=ON
+          -DCMAKE_C_COMPILER=clang
+          -DCMAKE_CXX_COMPILER=clang++
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Test (data races fail the job)
+        env:
+          TSAN_OPTIONS: halt_on_error=1 second_deadlock_stack=1
+        run: ctest --test-dir build --output-on-failure
+
   python-format:
     name: Python format + export check (numpy only)
     runs-on: ubuntu-latest

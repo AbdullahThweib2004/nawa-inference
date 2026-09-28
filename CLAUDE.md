@@ -190,6 +190,24 @@ A lightweight neural network inference engine in C++, written from scratch. It i
 - Broadcasting: fast paths for row `{…,N}+{N}` and column `{…,R,C}+{…,R,1}`; the general
   path uses incremental offsets.
 
+## Threads (stage 9.5)
+
+- `include/inference/runtime/thread_pool.hpp`: `ThreadPool`, created once; `parallel_for`
+  with static round-robin chunks; the caller participates; exceptions are rethrown; nested
+  calls run inline. `default_thread_pool()` is used by `gemm()`. `set_num_threads(n)` is for
+  tests and benchmarks only (not while the pool is in use).
+- Thread count: `NAWA_NUM_THREADS`, else physical cores (P-cores on hybrid CPUs), capped by
+  CPU affinity.
+- GEMM goes parallel only from `parallel_threshold_macs()` = 2²² multiply-adds (measured;
+  `NAWA_MIN_PARALLEL_MACS` overrides it for experiments). It splits M in multiples of 6
+  rows, or N panels when M is small.
+- **Invariant: results are bit-identical for any thread count** (each output is computed
+  by exactly one thread, in k order). `tests/test_threads.cpp` checks this. Keep it true.
+- `-DENABLE_TSAN=ON` (separate from `ENABLE_SANITIZERS`); CI runs the suite under TSan
+  (clang).
+- Multithreaded benchmarks use wall time (`UseRealTime`). `LoopMeter` cycles only count the
+  calling thread.
+
 ## Build option `NAWA_NATIVE` (default OFF)
 
 - `-DNAWA_NATIVE=ON` adds `-march=native` to every target. The compiler then targets
@@ -297,9 +315,10 @@ To add a test file, create `tests/test_<name>.cpp` and add it to `inference_test
    - 9.3 cache-blocked GEMM + AVX2 micro-kernel + runtime dispatch + pre-packed weights ✅
    - 9.4 memory and fusion ✅ (0 allocations per workspace predict, fused Linear+ReLU
      epilogue, broadcast fast paths, 64-byte-aligned storage)
-   - **9.5 multithreading** ← *current stage*: ThreadPool (created once), GEMM split over M
-     blocks (or N panels for small M) with a minimum-work threshold, NAWA_NUM_THREADS
-     (default: physical cores), bit-identical results for any thread count, ENABLE_TSAN +
-     CI job, wall-time scaling for 1/2/4/all threads
-   - 9.6 INT8 quantization (format v2, layer type 5, `nawa quantize`)
+   - 9.5 multithreading ✅ (ThreadPool, parallel GEMM, bit-identical for any thread count,
+     TSan CI job; scaling limited by the laptop's power budget, see docs/performance.md)
+   - **9.6 INT8 quantization** ← *current stage*: per-output-channel int8 weights, dynamic
+     per-row activation quantization, int32 accumulation; scalar reference + AVX2 kernel
+     (runtime dispatch, differential tests); `Model::quantize()`, `nawa quantize`, layer
+     type 5 (LinearInt8), format version 2 (readers still accept 1); Python reader + tests
 10. Extensions

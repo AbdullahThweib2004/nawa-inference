@@ -13,6 +13,7 @@ option(ENABLE_TESTS "Build the GoogleTest unit tests" ON)
 option(ENABLE_BENCHMARKS "Build the benchmarks" OFF)
 option(BUILD_EXAMPLES "Build the example programs" ON)
 option(ENABLE_SANITIZERS "Enable AddressSanitizer + UBSan in Debug builds (GCC/Clang)" OFF)
+option(ENABLE_TSAN "Enable ThreadSanitizer (GCC/Clang; cannot be combined with ENABLE_SANITIZERS)" OFF)
 option(NAWA_NATIVE "Optimize for this machine's CPU (-march=native); binaries may not run elsewhere" OFF)
 
 # ---------------------------------------------------------------------------
@@ -75,6 +76,22 @@ if(ENABLE_SANITIZERS)
     endif()
 endif()
 
+# ThreadSanitizer: finds data races between threads (the thread pool, the parallel GEMM).
+# Separate from ASan because the two can't be combined in one binary. Applied in every build
+# type (RelWithDebInfo is a good choice: TSan slows code down ~5-15x).
+if(ENABLE_TSAN)
+    if(ENABLE_SANITIZERS)
+        message(FATAL_ERROR "ENABLE_TSAN and ENABLE_SANITIZERS can't be used together")
+    endif()
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        set(_tsan_flags -fsanitize=thread -fno-omit-frame-pointer)
+        target_compile_options(inference_sanitizers INTERFACE ${_tsan_flags})
+        target_link_options(inference_sanitizers INTERFACE ${_tsan_flags})
+    else()
+        message(WARNING "ENABLE_TSAN is only supported on GCC/Clang; ignoring.")
+    endif()
+endif()
+
 # ---------------------------------------------------------------------------
 # Core library
 # ---------------------------------------------------------------------------
@@ -90,6 +107,7 @@ add_library(inference_core STATIC
     src/model/tensor_io.cpp
     src/model/model.cpp
     src/runtime/workspace.cpp
+    src/runtime/thread_pool.cpp
     src/data/idx.cpp
     src/data/digit_preprocess.cpp
 )
@@ -104,6 +122,9 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|amd64|i[3-6]86" AND
 else()
     target_compile_definitions(inference_core PRIVATE NAWA_HAVE_AVX2_KERNEL=0)
 endif()
+
+find_package(Threads REQUIRED)
+target_link_libraries(inference_core PUBLIC Threads::Threads)
 
 target_include_directories(inference_core PUBLIC
     ${PROJECT_SOURCE_DIR}/include

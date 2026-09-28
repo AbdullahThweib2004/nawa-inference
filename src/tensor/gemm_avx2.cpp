@@ -155,10 +155,10 @@ void tile(std::size_t rows, std::size_t cols, std::size_t kc, const float* a_pan
 // and 2 accumulators per panel would leave the FMA units waiting on latency. So 4 panels are
 // processed together: 8 independent accumulators, the same A value broadcast into all.
 void gemv(const float* a, std::size_t K, std::size_t N, const float* b_panels, float* c,
-          const float* bias, bool relu) {
-    const std::size_t panels = (N + kNR - 1) / kNR;
+          const float* bias, bool relu, std::size_t panel_begin, std::size_t panel_end) {
+    const std::size_t panels = panel_end;
     const std::size_t panel_stride = K * kNR;  // floats between consecutive panels
-    std::size_t p = 0;
+    std::size_t p = panel_begin;
     for (; p + 4 <= panels; p += 4) {
         const float* b = b_panels + p * panel_stride;
         __m256 acc[4][2];
@@ -201,20 +201,22 @@ void gemv(const float* a, std::size_t K, std::size_t N, const float* b_panels, f
 }  // namespace
 
 void gemm_avx2(const float* a, std::size_t M, std::size_t K, std::size_t N, const float* b_panels,
-               float* c, float* a_pack, const float* bias, bool relu) {
+               float* c, float* a_pack, const float* bias, bool relu, std::size_t col_begin,
+               std::size_t col_end) {
     if (M == 0 || N == 0) return;
     if (K == 0) {  // empty sum: C = 0 (can't happen with Tensor, whose dims are >= 1)
         for (std::size_t i = 0; i < M; ++i)
-            for (std::size_t j = 0; j < N; ++j) c[i * N + j] = epilogue1(0.0f, bias, j, relu);
+            for (std::size_t j = col_begin; j < col_end; ++j)
+                c[i * N + j] = epilogue1(0.0f, bias, j, relu);
         return;
     }
     if (M == 1) {
-        gemv(a, K, N, b_panels, c, bias, relu);
+        gemv(a, K, N, b_panels, c, bias, relu, col_begin / kNR, (col_end + kNR - 1) / kNR);
         return;
     }
     const std::size_t panel_stride = K * kNR;
-    for (std::size_t jc = 0; jc < N; jc += kNC) {
-        const std::size_t nc = min_size(kNC, N - jc);
+    for (std::size_t jc = col_begin; jc < col_end; jc += kNC) {
+        const std::size_t nc = min_size(kNC, col_end - jc);
         for (std::size_t pc = 0; pc < K; pc += kKC) {
             const std::size_t kc = min_size(kKC, K - pc);
             const bool accumulate = pc > 0;  // first depth block overwrites C
@@ -224,7 +226,7 @@ void gemm_avx2(const float* a, std::size_t M, std::size_t K, std::size_t N, cons
                 pack_a(a + ic * K + pc, K, mc, kc, a_pack);
                 for (std::size_t jr = 0; jr < nc; jr += kNR) {
                     const std::size_t col = jc + jr;
-                    const std::size_t cols = min_size(kNR, N - col);
+                    const std::size_t cols = min_size(kNR, col_end - col);
                     const float* b = b_panels + (col / kNR) * panel_stride + pc * kNR;
                     for (std::size_t ir = 0; ir < mc; ir += kMR) {
                         const std::size_t rows = min_size(kMR, mc - ir);
