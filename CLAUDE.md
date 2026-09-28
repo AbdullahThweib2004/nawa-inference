@@ -174,6 +174,22 @@ A lightweight neural network inference engine in C++, written from scratch. It i
   `NAWA_KERNEL=portable`. `test_matmul_diff.cpp` checks every available kernel against
   `matmul_naive`, with shapes that hit all edge tiles.
 
+## Memory and execution plan (stage 9.4)
+
+- `Tensor` storage is `AlignedBuffer` (64-byte aligned, keeps capacity). `Tensor::resize()`
+  and `resize(rows, cols)` reuse memory; `resize(rows, cols)` on a 2-D tensor allocates
+  nothing.
+- `*_into` ops (`matmul_into`, `add_into`, ...) write into existing tensors. In-place
+  kernels: `relu_inplace`, `sigmoid_inplace`, `softmax_rows_inplace`.
+- **`Model::predict(raw, Workspace&)` is the hot path: 0 heap allocations in steady state**
+  (`tests/test_memory.cpp` counts them via `tests/alloc_hook.cpp`; that hook is disabled
+  under sanitizers). **Rule: one Workspace per thread; Model is immutable and shareable.**
+- `Model::plan()` is built at load: Linear followed by ReLU becomes one step, with bias and
+  ReLU applied in the GEMM epilogue (`GemmEpilogue`). `layers()` and `forward_trace()` stay
+  unfused (4 layers). Fused and unfused results must stay bit-identical (tested).
+- Broadcasting: fast paths for row `{…,N}+{N}` and column `{…,R,C}+{…,R,1}`; the general
+  path uses incremental offsets.
+
 ## Build option `NAWA_NATIVE` (default OFF)
 
 - `-DNAWA_NATIVE=ON` adds `-march=native` to every target. The compiler then targets
@@ -279,9 +295,11 @@ To add a test file, create `tests/test_<name>.cpp` and add it to `inference_test
    - 9.1 i-k-j loop order in matmul ✅ (`matmul_naive` kept as the reference; differential tests)
    - 9.2 optional `-march=native` (`NAWA_NATIVE`) ✅
    - 9.3 cache-blocked GEMM + AVX2 micro-kernel + runtime dispatch + pre-packed weights ✅
-   - **9.4 memory and fusion** ← *current stage*: Workspace + `_into` ops (goal ~0
-     allocations per predict), fused Linear+ReLU epilogue, row/column broadcast fast paths
-     (also fixes the 9.2 native-build regression), 64-byte-aligned Tensor storage
-   - 9.5 multithreading (ThreadPool, deterministic GEMM split, TSan job)
+   - 9.4 memory and fusion ✅ (0 allocations per workspace predict, fused Linear+ReLU
+     epilogue, broadcast fast paths, 64-byte-aligned storage)
+   - **9.5 multithreading** ← *current stage*: ThreadPool (created once), GEMM split over M
+     blocks (or N panels for small M) with a minimum-work threshold, NAWA_NUM_THREADS
+     (default: physical cores), bit-identical results for any thread count, ENABLE_TSAN +
+     CI job, wall-time scaling for 1/2/4/all threads
    - 9.6 INT8 quantization (format v2, layer type 5, `nawa quantize`)
 10. Extensions

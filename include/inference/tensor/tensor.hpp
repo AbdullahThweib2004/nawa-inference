@@ -25,6 +25,41 @@ Shape compute_strides(const Shape& shape);
 // Human-readable shape for messages, e.g. "[2, 3]".
 std::string shape_to_string(const Shape& shape);
 
+// Heap storage for float32 values, aligned to 64 bytes (one cache line, and the width of an
+// AVX-512 register): a SIMD load of a whole cache line never straddles two lines, and
+// every tensor starts at the same position relative to cache lines, which makes timings
+// reproducible. Like std::vector it owns its memory (deep copy, cheap move), and it keeps
+// its capacity when it shrinks, so reused buffers stop allocating once they are big enough.
+class AlignedBuffer {
+public:
+    static constexpr std::size_t kAlignment = 64;
+
+    AlignedBuffer() noexcept = default;
+    explicit AlignedBuffer(std::size_t size, float value = 0.0f);
+    AlignedBuffer(const float* values, std::size_t size);  // copies `size` values
+    AlignedBuffer(const AlignedBuffer& other);
+    AlignedBuffer& operator=(const AlignedBuffer& other);
+    AlignedBuffer(AlignedBuffer&& other) noexcept;
+    AlignedBuffer& operator=(AlignedBuffer&& other) noexcept;
+    ~AlignedBuffer();
+
+    float* data() noexcept { return data_; }
+    const float* data() const noexcept { return data_; }
+    std::size_t size() const noexcept { return size_; }
+    std::size_t capacity() const noexcept { return capacity_; }
+    float& operator[](std::size_t i) noexcept { return data_[i]; }
+    float operator[](std::size_t i) const noexcept { return data_[i]; }
+
+    // Sets the size to n. Reallocates only if n > capacity(); the contents are then
+    // UNSPECIFIED (not preserved), because every caller overwrites them anyway.
+    void resize_uninitialized(std::size_t n);
+
+private:
+    float* data_ = nullptr;
+    std::size_t size_ = 0;
+    std::size_t capacity_ = 0;
+};
+
 // An n-dimensional array of float32 values.
 //
 // Design (see CLAUDE.md):
@@ -85,10 +120,21 @@ public:
 
     void fill(float value);
 
+    // Changes the shape in place, reusing the existing memory when it is large enough
+    // (no allocation in steady state). The contents are unspecified afterwards: this is for
+    // output buffers that are about to be overwritten. Throws like the constructor for a
+    // zero-sized dimension.
+    void resize(const Shape& new_shape);
+
+    // Same for a 2-D shape, without building a Shape (so a no-op resize allocates nothing).
+    void resize(std::size_t rows, std::size_t cols);
+
     // Multi-line, PyTorch-like representation. Large tensors are summarized with "...".
     std::string to_string() const;
 
 private:
+    Tensor() = default;  // used internally (reshape) before filling in all members
+
     // Position of the element at `indices` in data_, using the stride formula:
     //   offset = sum_i indices[i] * strides_[i]
     // Throws std::out_of_range on a wrong number of indices or an index out of range.
@@ -96,9 +142,9 @@ private:
 
     Shape shape_;
     Shape strides_;  // in elements, not bytes
-    // Kept private and reached only through the API, so it can later be replaced with
-    // 64-byte-aligned storage for SIMD without changing any calling code.
-    std::vector<float> data_;
+    // 64-byte-aligned storage (step 9.4). It was a std::vector<float> before; because it
+    // was only ever reached through the API, no calling code had to change.
+    AlignedBuffer data_;
 };
 
 std::ostream& operator<<(std::ostream& os, const Tensor& tensor);

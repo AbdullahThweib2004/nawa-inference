@@ -10,8 +10,8 @@
 namespace inference::detail {
 
 // Blocking parameters of the AVX2 GEMM (chosen in docs/performance.md, stage 9.3).
-inline constexpr std::size_t kMR = 6;    // rows of C per micro-kernel call
-inline constexpr std::size_t kNR = 16;   // columns of C per micro-kernel call (2 ymm)
+inline constexpr std::size_t kMR = 6;   // rows of C per micro-kernel call
+inline constexpr std::size_t kNR = 16;  // columns of C per micro-kernel call (2 ymm)
 // NAWA_GEMM_MC / NAWA_GEMM_KC exist only for tuning experiments (-D on the command line).
 #ifndef NAWA_GEMM_MC
 #define NAWA_GEMM_MC 96
@@ -34,7 +34,8 @@ void gemm_ikj(const float* a, std::size_t M, std::size_t K, std::size_t N, const
 
 // C {M,N} = A {M,K} · B, with B in the 16-column panel layout (see gemm.hpp).
 // `a_pack` must hold kAvx2APackFloats floats.
+// `bias` (N values, or nullptr) and `relu` form the epilogue (see GemmEpilogue in gemm.hpp).
 void gemm_avx2(const float* a, std::size_t M, std::size_t K, std::size_t N, const float* b_panels,
-               float* c, float* a_pack);
+               float* c, float* a_pack, const float* bias, bool relu);
 
 }  // namespace inference::detail

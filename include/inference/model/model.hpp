@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "inference/layers/layer.hpp"
+#include "inference/runtime/workspace.hpp"
 #include "inference/tensor/tensor.hpp"
 
 namespace inference {
@@ -47,14 +48,22 @@ public:
     // Runs every layer on already-normalized input ({N, F} or {F}). Returns {N, outputs}.
     Tensor forward(const Tensor& normalized) const;
 
-    // preprocess + forward.
+    // preprocess + all layers, through the execution plan (fused Linear+ReLU). Convenience
+    // version: allocates a temporary Workspace and returns a copy of the result.
     Tensor predict(const Tensor& raw) const;
+
+    // The allocation-free version: all intermediate results and the output live in
+    // `workspace`, whose buffers are reused across calls (0 heap allocations once they have
+    // grown to the batch size). Returns a reference into the workspace, valid until its next
+    // use. One Workspace per thread; the Model itself can be shared (see workspace.hpp).
+    const Tensor& predict(const Tensor& raw, Workspace& workspace) const;
 
     // Like forward(), but returns the output of every layer, in order (for debugging).
     std::vector<Tensor> forward_trace(const Tensor& normalized) const;
 
     // One prediction per batch row of raw input.
     std::vector<Prediction> classify(const Tensor& raw) const;
+    std::vector<Prediction> classify(const Tensor& raw, Workspace& workspace) const;
 
     // Human-readable description: layers, shapes, parameter counts, metadata.
     std::string summary() const;
@@ -66,8 +75,22 @@ public:
     const Metadata& metadata() const noexcept { return metadata_; }
     const std::vector<std::unique_ptr<Layer>>& layers() const noexcept { return layers_; }
 
+    // One step of the execution plan built at load time. Usually one layer; a Linear followed
+    // by a ReLU becomes ONE step (fuse_relu), applied in the GEMM epilogue.
+    struct Step {
+        const Layer* layer;      // points into layers()
+        bool fuse_relu = false;  // Linear only: also apply the following ReLU
+    };
+    const std::vector<Step>& plan() const noexcept { return plan_; }
+
 private:
     Model() = default;  // used by load()
+
+    // Builds plan_ from layers_ (fusing Linear + ReLU).
+    void build_plan();
+
+    // Normalizes n raw values into `out` (the formula of preprocess()).
+    void preprocess_into(const float* raw, std::size_t n, float* out) const;
 
     // Checks that input is {N, F} or {F} and returns it as {N, F}.
     Tensor as_batch(const Tensor& input, const char* fn) const;
@@ -76,6 +99,7 @@ private:
     Metadata metadata_;
     std::size_t input_features_ = 0;
     std::vector<std::unique_ptr<Layer>> layers_;
+    std::vector<Step> plan_;
 };
 
 }  // namespace inference

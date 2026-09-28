@@ -26,6 +26,13 @@ public:
     // Throws std::invalid_argument on a wrong rank or feature size.
     Tensor forward(const Tensor& input) const override;
 
+    // Allocation-free form used by Model: output {rows, out_features} = input {rows,
+    // in_features} · W + b, written to raw buffers (no shape checks: the caller guarantees
+    // them). With fuse_relu, a following ReLU is applied in the same pass, while each
+    // output is still in a register (the GEMM epilogue).
+    void forward_into(const float* input, std::size_t rows, float* output,
+                      bool fuse_relu = false) const;
+
     std::string name() const override;
     std::size_t num_parameters() const override;
 

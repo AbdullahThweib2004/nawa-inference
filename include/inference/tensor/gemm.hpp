@@ -53,8 +53,19 @@ private:
     std::vector<float> data_;
 };
 
-// C = A · B, where A is row-major {M, K}, B is packed {K, N}, and C is row-major {M, N}
-// (overwritten). The kernel is the one B was packed for.
-void gemm(const float* a, std::size_t M, const PackedMatrix& b, float* c);
+// Work done on each element of C as it is written, while it is still in a register
+// ("fused" into the GEMM instead of separate passes over memory):
+//     c = (A·B)[i][j] + bias[j]        if bias is set  (a Linear layer's bias)
+//     c = max(c, 0)                    if relu is set  (a following ReLU layer)
+// The results are bit-identical to doing the same steps separately afterwards.
+struct GemmEpilogue {
+    const float* bias = nullptr;  // N values, or nullptr for no bias
+    bool relu = false;
+};
+
+// C = A · B (+ epilogue), where A is row-major {M, K}, B is packed {K, N}, and C is
+// row-major {M, N} (overwritten). The kernel is the one B was packed for.
+void gemm(const float* a, std::size_t M, const PackedMatrix& b, float* c,
+          const GemmEpilogue& epilogue = {});
 
 }  // namespace inference

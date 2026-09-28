@@ -4,8 +4,6 @@
 #include <string>
 #include <utility>
 
-#include "inference/tensor/ops.hpp"
-
 namespace inference {
 
 Linear::Linear(Tensor weight, std::optional<Tensor> bias)
@@ -33,12 +31,15 @@ Tensor Linear::forward(const Tensor& input) const {
     }
     // {batch, in} · {in, out} -> {batch, out}, using the weights packed at construction.
     Tensor output({input.size(0), out_features()});
-    gemm(input.data(), input.size(0), packed_, output.data());
-    if (bias_) {
-        // {batch, out} + {out}: the bias row is broadcast to every sample in the batch.
-        output = output + *bias_;
-    }
+    forward_into(input.data(), input.size(0), output.data());
     return output;
+}
+
+void Linear::forward_into(const float* input, std::size_t rows, float* output,
+                          bool fuse_relu) const {
+    // The bias is added in the GEMM epilogue, as each output is written, instead of a
+    // separate broadcast add over the whole output afterwards (bit-identical results).
+    gemm(input, rows, packed_, output, GemmEpilogue{bias_ ? bias_->data() : nullptr, fuse_relu});
 }
 
 std::string Linear::name() const {

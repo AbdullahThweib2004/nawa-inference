@@ -10,6 +10,7 @@
 #include "alloc_counter.hpp"
 #include "bench_common.hpp"
 #include "inference/model/model.hpp"
+#include "inference/runtime/workspace.hpp"
 
 using namespace inference;
 using nawa_bench::random_pixels;
@@ -107,6 +108,68 @@ BENCHMARK(BM_Predict)
     ->Arg(32)
     ->Arg(256)
     ->Unit(benchmark::kMicrosecond);
+
+// The allocation-free path: predict(raw, workspace) with a workspace reused across calls.
+void BM_PredictWorkspace(benchmark::State& state) {
+    const auto batch = static_cast<std::size_t>(state.range(0));
+    const Tensor raw = random_pixels({batch, 784});
+    Workspace workspace;
+    (void)model().predict(raw, workspace);  // let the buffers grow before measuring
+    const nawa_bench::AllocStats before = nawa_bench::alloc_snapshot();
+    nawa_bench::LoopMeter meter;
+    for (auto _ : state) {
+        const Tensor& probs = model().predict(raw, workspace);
+        benchmark::DoNotOptimize(probs.data());
+        benchmark::ClobberMemory();
+    }
+    meter.report(state);
+    const nawa_bench::AllocStats used = nawa_bench::alloc_snapshot() - before;
+    const auto iters = static_cast<double>(state.iterations());
+    state.SetItemsProcessed(state.iterations() * static_cast<std::int64_t>(batch));
+    state.counters["allocs_per_predict"] = static_cast<double>(used.count) / iters;
+    if (meter.has_cycles()) {
+        state.counters["cycles_per_image"] =
+            static_cast<double>(meter.cycles()) / (iters * static_cast<double>(batch));
+    }
+}
+BENCHMARK(BM_PredictWorkspace)
+    ->ArgName("batch")
+    ->Arg(1)
+    ->Arg(8)
+    ->Arg(32)
+    ->Arg(256)
+    ->Unit(benchmark::kMicrosecond);
+
+// Batch-1 latency distribution, allocation-free path.
+void BM_PredictLatencyWorkspace(benchmark::State& state) {
+    using Clock = std::chrono::steady_clock;
+    const Tensor raw = random_pixels({1, 784});
+    Workspace workspace;
+    (void)model().predict(raw, workspace);
+    std::vector<double> micros;
+    micros.reserve(1 << 20);
+    for (auto _ : state) {
+        const auto start = Clock::now();
+        const Tensor& probs = model().predict(raw, workspace);
+        benchmark::DoNotOptimize(probs.data());
+        benchmark::ClobberMemory();
+        const auto end = Clock::now();
+        const double seconds = std::chrono::duration<double>(end - start).count();
+        state.SetIterationTime(seconds);
+        if (micros.size() < micros.capacity()) micros.push_back(seconds * 1e6);
+    }
+    if (micros.empty()) return;
+    const auto percentile = [&](double p) {
+        const auto k = static_cast<std::size_t>(p * static_cast<double>(micros.size() - 1));
+        std::nth_element(micros.begin(), micros.begin() + static_cast<std::ptrdiff_t>(k),
+                         micros.end());
+        return micros[k];
+    };
+    state.counters["p50_us"] = percentile(0.50);
+    state.counters["p90_us"] = percentile(0.90);
+    state.counters["p99_us"] = percentile(0.99);
+}
+BENCHMARK(BM_PredictLatencyWorkspace)->UseManualTime()->Unit(benchmark::kMicrosecond);
 
 // Batch-1 latency distribution. Each call is timed individually and reported through
 // manual timing, so the percentiles describe single requests rather than averages.

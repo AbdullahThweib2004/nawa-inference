@@ -2,8 +2,10 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <iomanip>
 #include <limits>
+#include <new>
 #include <ostream>
 #include <sstream>
 #include <stdexcept>
@@ -139,6 +141,74 @@ Shape compute_strides(const Shape& shape) {
 std::string shape_to_string(const Shape& shape) { return dims_to_string(shape); }
 
 // ---------------------------------------------------------------------------
+// AlignedBuffer
+// ---------------------------------------------------------------------------
+
+namespace {
+
+float* allocate_aligned(std::size_t n) {
+    if (n == 0) return nullptr;
+    if (n > std::numeric_limits<std::size_t>::max() / sizeof(float)) throw std::bad_alloc();
+    // The aligned form of operator new (C++17) returns memory aligned to kAlignment.
+    return static_cast<float*>(
+        ::operator new(n * sizeof(float), std::align_val_t{AlignedBuffer::kAlignment}));
+}
+
+void free_aligned(float* p) noexcept {
+    if (p) ::operator delete(p, std::align_val_t{AlignedBuffer::kAlignment});
+}
+
+}  // namespace
+
+AlignedBuffer::AlignedBuffer(std::size_t size, float value)
+    : data_(allocate_aligned(size)), size_(size), capacity_(size) {
+    std::fill(data_, data_ + size_, value);
+}
+
+AlignedBuffer::AlignedBuffer(const float* values, std::size_t size)
+    : data_(allocate_aligned(size)), size_(size), capacity_(size) {
+    if (size_ > 0) std::memcpy(data_, values, size_ * sizeof(float));
+}
+
+AlignedBuffer::AlignedBuffer(const AlignedBuffer& other)
+    : AlignedBuffer(other.data_, other.size_) {}
+
+AlignedBuffer& AlignedBuffer::operator=(const AlignedBuffer& other) {
+    if (this != &other) {
+        resize_uninitialized(other.size_);
+        if (size_ > 0) std::memcpy(data_, other.data_, size_ * sizeof(float));
+    }
+    return *this;
+}
+
+AlignedBuffer::AlignedBuffer(AlignedBuffer&& other) noexcept
+    : data_(std::exchange(other.data_, nullptr)),
+      size_(std::exchange(other.size_, 0)),
+      capacity_(std::exchange(other.capacity_, 0)) {}
+
+AlignedBuffer& AlignedBuffer::operator=(AlignedBuffer&& other) noexcept {
+    if (this != &other) {
+        free_aligned(data_);
+        data_ = std::exchange(other.data_, nullptr);
+        size_ = std::exchange(other.size_, 0);
+        capacity_ = std::exchange(other.capacity_, 0);
+    }
+    return *this;
+}
+
+AlignedBuffer::~AlignedBuffer() { free_aligned(data_); }
+
+void AlignedBuffer::resize_uninitialized(std::size_t n) {
+    if (n > capacity_) {
+        float* fresh = allocate_aligned(n);  // allocate first: if it throws, *this is unchanged
+        free_aligned(data_);
+        data_ = fresh;
+        capacity_ = n;
+    }
+    size_ = n;
+}
+
+// ---------------------------------------------------------------------------
 // Construction
 // ---------------------------------------------------------------------------
 
@@ -150,7 +220,7 @@ Tensor::Tensor(Shape shape)
 Tensor::Tensor(Shape shape, std::vector<float> data)
     : shape_(validated(std::move(shape))),
       strides_(compute_strides(shape_)),
-      data_(std::move(data)) {
+      data_(data.data(), data.size()) {
     const std::size_t expected = numel_of(shape_);
     if (data_.size() != expected) {
         throw std::invalid_argument("Tensor: shape " + shape_to_string(shape_) + " needs " +
@@ -225,7 +295,11 @@ Tensor Tensor::reshape(Shape new_shape) const {
                                     shape_to_string(new_shape) + " (" +
                                     std::to_string(numel_of(new_shape)) + " elements)");
     }
-    return Tensor(std::move(new_shape), data_);  // copies data_
+    Tensor result;
+    result.shape_ = std::move(new_shape);
+    result.strides_ = compute_strides(result.shape_);
+    result.data_ = data_;  // deep copy
+    return result;
 }
 
 Tensor Tensor::reshape(const std::vector<std::int64_t>& new_shape) const {
@@ -274,7 +348,47 @@ Tensor Tensor::flatten() const { return reshape(Shape{numel()}); }
 // instead of the free function.
 Tensor Tensor::matmul(const Tensor& other) const { return inference::matmul(*this, other); }
 
-void Tensor::fill(float value) { std::fill(data_.begin(), data_.end(), value); }
+void Tensor::fill(float value) { std::fill(data_.data(), data_.data() + data_.size(), value); }
+
+void Tensor::resize(std::size_t rows, std::size_t cols) {
+    if (shape_.size() != 2 || rows == 0 || cols == 0) {
+        resize(Shape{rows, cols});  // changes the number of dimensions (or throws)
+        return;
+    }
+    if (rows > std::numeric_limits<std::size_t>::max() / cols) {
+        throw std::invalid_argument("Tensor::resize: " + std::to_string(rows) + " x " +
+                                    std::to_string(cols) + " elements overflow std::size_t");
+    }
+    // Already 2-D: update the existing shape and strides in place. Building a temporary
+    // Shape here would itself be a heap allocation on every call.
+    shape_[0] = rows;
+    shape_[1] = cols;
+    strides_[0] = cols;
+    strides_[1] = 1;
+    data_.resize_uninitialized(rows * cols);
+}
+
+void Tensor::resize(const Shape& new_shape) {
+    if (new_shape == shape_) return;  // the common case in a reused workspace
+    for (std::size_t i = 0; i < new_shape.size(); ++i) {
+        if (new_shape[i] == 0) {
+            throw std::invalid_argument("Tensor::resize: dimension " + std::to_string(i) +
+                                        " of shape " + shape_to_string(new_shape) +
+                                        " has size 0; zero-sized dimensions are not supported");
+        }
+    }
+    const std::size_t n = numel_of(new_shape);
+    data_.resize_uninitialized(n);
+    // Assigning into the existing vectors reuses their capacity (no allocation when the
+    // number of dimensions doesn't grow). Strides are recomputed in place for the same reason.
+    shape_ = new_shape;
+    strides_.resize(shape_.size());
+    std::size_t stride = 1;
+    for (std::size_t i = shape_.size(); i-- > 0;) {
+        strides_[i] = stride;
+        stride *= shape_[i];
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Printing and comparison
@@ -282,7 +396,9 @@ void Tensor::fill(float value) { std::fill(data_.begin(), data_.end(), value); }
 
 std::string Tensor::to_string() const {
     std::size_t width = 0;
-    for (float v : data_) width = std::max(width, format_value(v).size());
+    for (std::size_t i = 0; i < data_.size(); ++i) {
+        width = std::max(width, format_value(data_[i]).size());
+    }
 
     std::ostringstream os;
     os << "tensor(";

@@ -187,11 +187,12 @@ int cmd_eval(int argc, char** argv) {
     std::vector<Mistake> mistakes;
     std::size_t correct = 0;
 
+    Workspace workspace;  // reused by every batch: no allocations after the first one
     for (std::size_t start = 0; start < n; start += batch_size) {
         const std::size_t rows = std::min(batch_size, n - start);
         const float* first = images.data() + start * features;
         const Tensor batch({rows, features}, std::vector<float>(first, first + rows * features));
-        const auto predictions = model.classify(batch);
+        const auto predictions = model.classify(batch, workspace);
         for (std::size_t r = 0; r < rows; ++r) {
             const std::size_t truth = labels[start + r];
             const auto& p = predictions[r];

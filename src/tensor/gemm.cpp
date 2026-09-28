@@ -103,21 +103,34 @@ PackedMatrix PackedMatrix::pack(const float* b, std::size_t K, std::size_t N, Ge
     return packed;
 }
 
-void gemm(const float* a, std::size_t M, const PackedMatrix& b, float* c) {
+void gemm(const float* a, std::size_t M, const PackedMatrix& b, float* c,
+          const GemmEpilogue& epilogue) {
     const std::size_t K = b.rows();
     const std::size_t N = b.cols();
     if (b.kernel() == GemmKernel::Portable) {
         detail::gemm_ikj(a, M, K, N, b.data(), c);
+        // Epilogue as a pass over each row right after it is computed (still in cache).
+        if (epilogue.bias || epilogue.relu) {
+            for (std::size_t i = 0; i < M; ++i) {
+                float* row = c + i * N;
+                if (epilogue.bias)
+                    for (std::size_t j = 0; j < N; ++j) row[j] = row[j] + epilogue.bias[j];
+                if (epilogue.relu)
+                    for (std::size_t j = 0; j < N; ++j)
+                        if (row[j] < 0.0f) row[j] = 0.0f;
+            }
+        }
         return;
     }
 #if NAWA_HAVE_AVX2_KERNEL
     // Scratch space for packing blocks of A. thread_local: each thread gets its own, it is
     // allocated on the first call only, and it is reused by every later call.
     thread_local std::vector<float> a_pack(detail::kAvx2APackFloats);
-    detail::gemm_avx2(a, M, K, N, b.data(), c, a_pack.data());
+    detail::gemm_avx2(a, M, K, N, b.data(), c, a_pack.data(), epilogue.bias, epilogue.relu);
 #else
     (void)a;
     (void)c;
+    (void)epilogue;
     throw std::logic_error("gemm: AVX2 kernel not compiled into this build");
 #endif
 }

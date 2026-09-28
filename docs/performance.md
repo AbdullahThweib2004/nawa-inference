@@ -117,7 +117,51 @@ Softmax 0.08M. **The non-GEMM work is now about half the time.** Still 65 alloca
 In the `NAWA_NATIVE=ON` build `predict` is *slower* after 9.3 (39k vs 26k cycles at batch
 1), because of the broadcasting regression below. Fixed in 9.4.
 
+### 9.4: memory and fusion
+
+- **Tensor storage is 64-byte aligned** (`AlignedBuffer`, replacing `std::vector<float>`).
+  `Tensor::resize()` reuses capacity.
+- **`Workspace` + `Model::predict(raw, workspace)`:** two ping-pong buffers, reused across
+  calls. **0 heap allocations per predict in steady state** (was 65). A test asserts this
+  with a counting `operator new` in the test binary. The convenience `predict(raw)`, which
+  creates a fresh workspace each call, makes 21.
+- **Execution plan built at load:** `Linear(784→128) + ReLU (fused) → Linear(128→10) →
+  Softmax`. Bias and ReLU are applied in the **GEMM epilogue**, as each C register is
+  stored. The result is bit-identical to the layer-by-layer path (tested, including NaN and
+  −0.0 through ReLU).
+- **Broadcasting:**
+  - Fast paths for row (`{M,N}+{N}`) and column (`{M,N}+{M,1}`) broadcasts.
+  - The general path now updates offsets incrementally instead of recomputing
+    `Σ index·stride` per element.
+  - The bias-broadcast add fell from **329k to 21.5k cycles (15.3×)**. This also removed the
+    9.2 native-build regression (1.77M → 20k).
+- **Preprocess and Softmax** write into the workspace: Softmax is one pass per row in place
+  (no temporaries), preprocess is one loop.
+
+| cycles per call | 9.3 | 9.4 | speedup |
+|---|---|---|---|
+| `predict` batch 256 | 3.74M | 2.16M | 1.73× |
+| `predict` batch 32 / batch 8 | 410k / 118k | 283k / 84.8k | 1.45× / 1.39× |
+| bias-broadcast add {256,128}+{128} | 329k | 21.5k | 15.3× |
+| Softmax {256,10} | 84.5k | 41.2k | 2.05× |
+| preprocess {256,784} | 722k | 341k | 2.12× |
+| heap allocations per `predict` (workspace) | 65 | **0** | |
+| batch-1 latency p50 / p90 / p99 (µs, wall) | 8.8 / 9.1 / 13.8 | **7.6 / 7.6 / 8.9** | |
+
+**Batch 1 in cycles is noisy in a new way.** The 1-row GEMV streams the 401 KB of weights
+from L2 and runs in either a ~15.5k-cycle or a ~23k-cycle mode, even within one recorded run
+(`MatmulPacked` M=1: 15.4k, `Linear` batch 1: 23.7k). The probable cause is activity on the
+sibling hyperthread of the pinned core, which shares L1 and L2. What does hold within a
+single run: batch-1 `predict` minus its first layer (preprocess, second layer, softmax, glue)
+fell from **~7.8k cycles (9.3) to ~1.7k (9.4)**. The p99 latency, which is where
+allocations and extra passes showed up, dropped from 13.8 to 8.9 µs.
+
+**Memory:** peak RSS after a batch-256 predict fell from 9.1 MiB (baseline) to 7.4 MiB.
+The weights are held twice, once row-major for `Linear::weight()` and once packed (+398 KB).
+
 ### Known regression in 9.2: broadcasting got slower
+
+**Fixed in 9.4** (incremental offsets and row/column fast paths).
 
 With `-march=native`, GCC also vectorizes the tiny per-element loop in the general
 broadcasting path (`offset += index[d] * stride[d]`, 2 iterations for 2-D tensors) using

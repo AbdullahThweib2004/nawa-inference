@@ -89,6 +89,7 @@ add_library(inference_core STATIC
     src/model/binary_io.cpp
     src/model/tensor_io.cpp
     src/model/model.cpp
+    src/runtime/workspace.cpp
     src/data/idx.cpp
     src/data/digit_preprocess.cpp
 )

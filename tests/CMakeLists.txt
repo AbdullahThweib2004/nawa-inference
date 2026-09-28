@@ -43,6 +43,8 @@ add_executable(inference_tests
     test_model.cpp
     test_data.cpp
     test_matmul_diff.cpp
+    test_memory.cpp
+    alloc_hook.cpp
 )
 target_link_libraries(inference_tests PRIVATE
     inference_core

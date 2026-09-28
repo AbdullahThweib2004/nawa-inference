@@ -36,46 +36,108 @@ Shape broadcast_strides(const Shape& in, const Shape& out) {
     return strides;
 }
 
-// Applies `op` element-wise to a and b with broadcasting and returns a new tensor.
+// True if `row` equals the trailing dimensions of `full` ({2,3} vs {3}, or {4,2,3} vs {2,3}),
+// so broadcasting simply repeats `row` for every leading index. The empty shape (a scalar)
+// counts too: it repeats a single value.
+bool is_trailing_row(const Shape& full, const Shape& row) {
+    return row.size() <= full.size() && std::equal(row.begin(), row.end(), full.end() - row.size());
+}
+
+// True if `col` equals `full` except that its last dimension is 1 ({4,3} vs {4,1}), so one
+// value per row is repeated across that row. (Softmax subtracts / divides this shape.)
+bool is_column(const Shape& full, const Shape& col) {
+    return full.size() == col.size() && !full.empty() && col.back() == 1 && full.back() > 1 &&
+           std::equal(col.begin(), col.end() - 1, full.begin());
+}
+
+// out = op(a, b) element-wise with broadcasting. `out` is resized (reusing its memory when
+// possible) and must not be the same tensor as a or b.
 template <typename Op>
-Tensor binary_op(const Tensor& a, const Tensor& b, Op op) {
+void binary_op_into(const Tensor& a, const Tensor& b, Tensor& out, Op op) {
     const float* pa = a.data();
     const float* pb = b.data();
 
-    // Fast path: identical shapes need no index math, just one linear pass.
+    // Fast path 1: identical shapes need no index math, just one linear pass.
     if (a.shape() == b.shape()) {
-        Tensor out(a.shape());
+        out.resize(a.shape());
         float* po = out.data();
         for (std::size_t i = 0; i < out.numel(); ++i) po[i] = op(pa[i], pb[i]);
-        return out;
+        return;
     }
 
-    Tensor out(broadcast_shape(a.shape(), b.shape()));
+    // Fast path 2: row broadcast, e.g. {batch, N} + {N} (every Linear bias). The inner loop is
+    // a plain contiguous loop the compiler vectorizes; no per-element index math.
+    if (is_trailing_row(a.shape(), b.shape()) || is_trailing_row(b.shape(), a.shape())) {
+        const bool a_full = is_trailing_row(a.shape(), b.shape());
+        const Tensor& full = a_full ? a : b;
+        const std::size_t n = (a_full ? b : a).numel();
+        const std::size_t rows = full.numel() / n;
+        out.resize(full.shape());
+        float* po = out.data();
+        for (std::size_t r = 0; r < rows; ++r) {
+            const std::size_t base = r * n;
+            if (a_full) {
+                for (std::size_t j = 0; j < n; ++j) po[base + j] = op(pa[base + j], pb[j]);
+            } else {
+                for (std::size_t j = 0; j < n; ++j) po[base + j] = op(pa[j], pb[base + j]);
+            }
+        }
+        return;
+    }
+
+    // Fast path 3: column broadcast, e.g. {rows, C} - {rows, 1} (softmax's max and sum).
+    if (is_column(a.shape(), b.shape()) || is_column(b.shape(), a.shape())) {
+        const bool a_full = is_column(a.shape(), b.shape());
+        const Tensor& full = a_full ? a : b;
+        const std::size_t cols = full.shape().back();
+        const std::size_t rows = full.numel() / cols;
+        out.resize(full.shape());
+        float* po = out.data();
+        for (std::size_t r = 0; r < rows; ++r) {
+            const std::size_t base = r * cols;
+            if (a_full) {
+                const float v = pb[r];
+                for (std::size_t j = 0; j < cols; ++j) po[base + j] = op(pa[base + j], v);
+            } else {
+                const float v = pa[r];
+                for (std::size_t j = 0; j < cols; ++j) po[base + j] = op(v, pb[base + j]);
+            }
+        }
+        return;
+    }
+
+    // General case: any NumPy-compatible pair of shapes.
+    out.resize(broadcast_shape(a.shape(), b.shape()));
     const Shape& out_shape = out.shape();
     const Shape a_strides = broadcast_strides(a.shape(), out_shape);
     const Shape b_strides = broadcast_strides(b.shape(), out_shape);
     float* po = out.data();
 
-    // Walk the output in row-major order. `index` holds the multi-dimensional position of
-    // output element i; each input offset is sum(index[d] * stride[d]), the same formula
-    // Tensor uses internally, just with the broadcast strides.
+    // Walk the output in row-major order with an odometer-style `index`. The input offsets
+    // are sum(index[d] * stride[d]), but instead of recomputing that sum for every element,
+    // they are updated incrementally: stepping dimension d adds stride[d], and wrapping it
+    // back to 0 subtracts stride[d] * size[d]. (Recomputing it per element was 13x slower
+    // than a same-shape add, and with -march=native GCC even vectorized that tiny loop.)
     Shape index(out_shape.size(), 0);
+    std::size_t a_off = 0;
+    std::size_t b_off = 0;
     for (std::size_t i = 0; i < out.numel(); ++i) {
-        std::size_t a_off = 0;
-        std::size_t b_off = 0;
-        for (std::size_t d = 0; d < index.size(); ++d) {
-            a_off += index[d] * a_strides[d];
-            b_off += index[d] * b_strides[d];
-        }
         po[i] = op(pa[a_off], pb[b_off]);
-
-        // Advance `index` like an odometer: bump the last dimension, and when it
-        // reaches its size, reset it to 0 and carry into the dimension before it.
         for (std::size_t d = index.size(); d-- > 0;) {
+            a_off += a_strides[d];
+            b_off += b_strides[d];
             if (++index[d] < out_shape[d]) break;
+            a_off -= a_strides[d] * out_shape[d];
+            b_off -= b_strides[d] * out_shape[d];
             index[d] = 0;
         }
     }
+}
+
+template <typename Op>
+Tensor binary_op(const Tensor& a, const Tensor& b, Op op) {
+    Tensor out(a.shape() == b.shape() ? a.shape() : broadcast_shape(a.shape(), b.shape()));
+    binary_op_into(a, b, out, op);
     return out;
 }
 
@@ -170,8 +232,14 @@ std::size_t slice_argmax(const float* first, std::size_t count, std::size_t stri
 Tensor matmul(const Tensor& a, const Tensor& b) { return matmul(a, b, GemmKernel::Auto); }
 
 Tensor matmul(const Tensor& a, const Tensor& b, GemmKernel kernel) {
+    Tensor out({1, 1});
+    matmul_into(a, b, out, kernel);
+    return out;
+}
+
+void matmul_into(const Tensor& a, const Tensor& b, Tensor& out, GemmKernel kernel) {
     const auto [M, K, N] = detail::check_matmul_shapes(a, b, "matmul");
-    Tensor out({M, N});
+    out.resize(M, N);
     const GemmKernel chosen = resolve_kernel(kernel);
     // Packing B costs one pass over B (K*N values) on every call, because here B is not
     // known to be constant. With only a few rows of A there isn't enough work to repay that,
@@ -183,7 +251,6 @@ Tensor matmul(const Tensor& a, const Tensor& b, GemmKernel kernel) {
     } else {
         gemm(a.data(), M, PackedMatrix::pack(b.data(), K, N, chosen), out.data());
     }
-    return out;
 }
 
 Tensor transpose(const Tensor& t) {
@@ -238,6 +305,56 @@ Tensor mul(const Tensor& a, const Tensor& b) {
 }
 Tensor div(const Tensor& a, const Tensor& b) {
     return binary_op(a, b, [](float x, float y) { return x / y; });
+}
+
+void add_into(const Tensor& a, const Tensor& b, Tensor& out) {
+    binary_op_into(a, b, out, [](float x, float y) { return x + y; });
+}
+void sub_into(const Tensor& a, const Tensor& b, Tensor& out) {
+    binary_op_into(a, b, out, [](float x, float y) { return x - y; });
+}
+void mul_into(const Tensor& a, const Tensor& b, Tensor& out) {
+    binary_op_into(a, b, out, [](float x, float y) { return x * y; });
+}
+void div_into(const Tensor& a, const Tensor& b, Tensor& out) {
+    binary_op_into(a, b, out, [](float x, float y) { return x / y; });
+}
+
+void relu_inplace(float* data, std::size_t n) {
+    for (std::size_t i = 0; i < n; ++i) {
+        if (data[i] < 0.0f) data[i] = 0.0f;
+    }
+}
+
+void sigmoid_inplace(float* data, std::size_t n) {
+    for (std::size_t i = 0; i < n; ++i) {
+        const float x = data[i];
+        // Stable form: exp() only ever gets a value <= 0 (see Sigmoid in activations.hpp).
+        if (x >= 0.0f) {
+            data[i] = 1.0f / (1.0f + std::exp(-x));
+        } else {
+            const float e = std::exp(x);
+            data[i] = e / (1.0f + e);
+        }
+    }
+}
+
+void softmax_rows_inplace(float* data, std::size_t rows, std::size_t cols) {
+    // One row at a time while it is in L1: max, shift + exp, sum, divide. The same float
+    // operations in the same order as the tensor-level version (max with keepdims,
+    // subtract, exp, sum, divide), so the results are bit-identical, without its four
+    // temporary tensors and five passes over memory.
+    for (std::size_t r = 0; r < rows; ++r) {
+        float* row = data + r * cols;
+        float m = row[0];
+        for (std::size_t j = 1; j < cols; ++j) {
+            if (row[j] > m) m = row[j];
+        }
+        for (std::size_t j = 0; j < cols; ++j) row[j] = std::exp(row[j] - m);
+        float total = 0.0f;
+        for (std::size_t j = 0; j < cols; ++j) total += row[j];
+        for (std::size_t j = 0; j < cols; ++j) row[j] = row[j] / total;
+    }
 }
 
 Tensor add(const Tensor& a, float s) {

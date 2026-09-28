@@ -199,6 +199,7 @@ Model Model::load(const std::string& path) {
         model.layers_.push_back(std::move(layer));
     }
     r.expect_end();
+    model.build_plan();
     return model;
 }
 
@@ -219,10 +220,35 @@ Tensor Model::as_batch(const Tensor& input, const char* fn) const {
         "] or [" + std::to_string(input_features_) + "], got " + shape_to_string(input.shape()));
 }
 
+void Model::preprocess_into(const float* raw, std::size_t n, float* out) const {
+    // The spec's formula, x = (raw * pixel_scale - mean) / std, in float32. One function for
+    // both preprocess() and predict(), so they give identical results.
+    const float scale = metadata_.pixel_scale;
+    const float mean = metadata_.mean[0];
+    const float stddev = metadata_.stddev[0];
+    for (std::size_t i = 0; i < n; ++i) out[i] = (raw[i] * scale - mean) / stddev;
+}
+
 Tensor Model::preprocess(const Tensor& raw) const {
     const Tensor x = as_batch(raw, "Model::preprocess");
-    // Same float32 operations, in the same order, as the spec and the Python exporter.
-    return (x * metadata_.pixel_scale - metadata_.mean[0]) / metadata_.stddev[0];
+    Tensor out(x.shape());
+    preprocess_into(x.data(), x.numel(), out.data());
+    return out;
+}
+
+void Model::build_plan() {
+    plan_.clear();
+    for (std::size_t i = 0; i < layers_.size(); ++i) {
+        const Layer* layer = layers_[i].get();
+        const bool next_is_relu =
+            i + 1 < layers_.size() && dynamic_cast<const ReLU*>(layers_[i + 1].get()) != nullptr;
+        if (dynamic_cast<const Linear*>(layer) && next_is_relu) {
+            plan_.push_back({layer, true});
+            ++i;  // the ReLU is part of this step
+        } else {
+            plan_.push_back({layer, false});
+        }
+    }
 }
 
 Tensor Model::forward(const Tensor& normalized) const {
@@ -231,7 +257,50 @@ Tensor Model::forward(const Tensor& normalized) const {
     return x;
 }
 
-Tensor Model::predict(const Tensor& raw) const { return forward(preprocess(raw)); }
+Tensor Model::predict(const Tensor& raw) const {
+    Workspace workspace;
+    return predict(raw, workspace);  // copies the result out of the temporary workspace
+}
+
+const Tensor& Model::predict(const Tensor& raw, Workspace& workspace) const {
+    // Shape check without building strings or temporaries (unless it fails).
+    std::size_t rows = 0;
+    if (raw.ndim() == 2 && raw.size(1) == input_features_) {
+        rows = raw.size(0);
+    } else if (raw.ndim() == 1 && raw.size(0) == input_features_) {
+        rows = 1;  // a single sample is a batch of one; its data is already contiguous
+    } else {
+        (void)as_batch(raw, "Model::predict");  // throws with the usual message
+    }
+
+    // Two buffers, used alternately: each step reads one and writes the other (or works in
+    // place). Their memory is reused on the next call.
+    Tensor* current = &workspace.buffer(0);
+    Tensor* other = &workspace.buffer(1);
+    current->resize(rows, input_features_);
+    preprocess_into(raw.data(), rows * input_features_, current->data());
+
+    for (const Step& step : plan_) {
+        if (const auto* linear = dynamic_cast<const Linear*>(step.layer)) {
+            other->resize(rows, linear->out_features());
+            linear->forward_into(current->data(), rows, other->data(), step.fuse_relu);
+            std::swap(current, other);
+        } else if (dynamic_cast<const ReLU*>(step.layer)) {
+            relu_inplace(current->data(), current->numel());
+        } else if (dynamic_cast<const Sigmoid*>(step.layer)) {
+            sigmoid_inplace(current->data(), current->numel());
+        } else if (const auto* softmax = dynamic_cast<const Softmax*>(step.layer);
+                   softmax && (softmax->axis() == -1 || softmax->axis() == 1)) {
+            softmax_rows_inplace(current->data(), rows, current->size(1));
+        } else {
+            // Anything without an in-place kernel (e.g. Softmax over axis 0): the layer's
+            // own forward(), which allocates. Not used by the MNIST model.
+            *other = step.layer->forward(*current);
+            std::swap(current, other);
+        }
+    }
+    return *current;
+}
 
 std::vector<Tensor> Model::forward_trace(const Tensor& normalized) const {
     std::vector<Tensor> outputs;
@@ -245,15 +314,23 @@ std::vector<Tensor> Model::forward_trace(const Tensor& normalized) const {
 }
 
 std::vector<Model::Prediction> Model::classify(const Tensor& raw) const {
-    const Tensor output = predict(raw);  // {N, classes}
-    const Tensor labels = argmax(output, -1);
-    const Tensor best = max(output, -1);
+    Workspace workspace;
+    return classify(raw, workspace);
+}
 
+std::vector<Model::Prediction> Model::classify(const Tensor& raw, Workspace& workspace) const {
+    const Tensor& output = predict(raw, workspace);  // {N, classes}
+    const std::size_t classes = output.size(1);
     std::vector<Prediction> predictions;
     predictions.reserve(output.size(0));
     for (std::size_t n = 0; n < output.size(0); ++n) {
-        // argmax stores indices as floats (see ops.hpp); they are exact small integers.
-        predictions.push_back({static_cast<std::size_t>(labels.at({n})), best.at({n})});
+        // First maximum wins on ties, like argmax().
+        const float* row = output.data() + n * classes;
+        std::size_t best = 0;
+        for (std::size_t j = 1; j < classes; ++j) {
+            if (row[j] > row[best]) best = j;
+        }
+        predictions.push_back({best, row[best]});
     }
     return predictions;
 }
@@ -294,6 +371,12 @@ std::string Model::summary() const {
         }
         os << '\n';
     }
+    os << "Execution plan:";
+    for (std::size_t i = 0; i < plan_.size(); ++i) {
+        os << (i ? " -> " : " ") << plan_[i].layer->name();
+        if (plan_[i].fuse_relu) os << " + ReLU (fused)";
+    }
+    os << '\n';
     os << "Total parameters: " << with_commas(num_parameters());
     return os.str();
 }

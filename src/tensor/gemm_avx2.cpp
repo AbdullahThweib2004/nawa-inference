@@ -43,6 +43,20 @@ void pack_a(const float* a, std::size_t lda, std::size_t mc, std::size_t kc, flo
     }
 }
 
+// Epilogue on one register of 8 outputs: + bias, then ReLU. max_ps(zero, x) (in THIS order)
+// returns x when x is NaN or -0.0, exactly like the scalar `x < 0 ? 0 : x` of the ReLU layer.
+inline __m256 epilogue8(__m256 x, const float* bias8, bool relu) {
+    if (bias8) x = _mm256_add_ps(x, _mm256_loadu_ps(bias8));
+    if (relu) x = _mm256_max_ps(_mm256_setzero_ps(), x);
+    return x;
+}
+
+float epilogue1(float x, const float* bias, std::size_t j, bool relu) {
+    if (bias) x = x + bias[j];
+    if (relu && x < 0.0f) x = 0.0f;
+    return x;
+}
+
 // The micro-kernel: a ROWS x 16 tile of C, held entirely in registers
 // (ROWS x 2 ymm accumulators, 12 for ROWS = 6) for the whole depth loop.
 //
@@ -51,9 +65,10 @@ void pack_a(const float* a, std::size_t lda, std::size_t mc, std::size_t kc, flo
 // FMA latency: 2 FMA units x 4 cycles = 8 FMAs must be in flight, and there are 12.
 //
 // `accumulate`: add to the existing C (later depth blocks), or overwrite it (first block).
+// `bias16` / `relu`: epilogue, passed only for the LAST depth block (bias16 = 16 values).
 template <int ROWS>
 void micro_kernel(std::size_t kc, const float* a_panel, const float* b_panel, float* c,
-                  std::size_t ldc, bool accumulate) {
+                  std::size_t ldc, bool accumulate, const float* bias16, bool relu) {
     __m256 acc[ROWS][2];
     for (int r = 0; r < ROWS; ++r) {
         if (accumulate) {
@@ -75,51 +90,63 @@ void micro_kernel(std::size_t kc, const float* a_panel, const float* b_panel, fl
         a_panel += kMR;  // packed A panels are always kMR wide
         b_panel += kNR;
     }
+    const bool has_epilogue = bias16 != nullptr || relu;
     for (int r = 0; r < ROWS; ++r) {
-        _mm256_storeu_ps(c + r * ldc, acc[r][0]);
-        _mm256_storeu_ps(c + r * ldc + 8, acc[r][1]);
+        __m256 lo = acc[r][0], hi = acc[r][1];
+        if (has_epilogue) {
+            lo = epilogue8(lo, bias16, relu);
+            hi = epilogue8(hi, bias16 ? bias16 + 8 : nullptr, relu);
+        }
+        _mm256_storeu_ps(c + r * ldc, lo);
+        _mm256_storeu_ps(c + r * ldc + 8, hi);
     }
 }
 
 // Runs the micro-kernel for a tile of `rows` x `cols` (rows <= 6, cols <= 16). Full-width
 // tiles write C directly. Edge tiles (the last columns when N isn't a multiple of 16) go
-// through a 6 x 16 temporary so the kernel never writes outside C.
+// through a 6 x 16 temporary so the kernel never touches memory outside C (or outside the
+// bias); their epilogue is applied per element when copying back.
+// `bias` points at this tile's first column (or is nullptr); `last` = last depth block.
 void tile(std::size_t rows, std::size_t cols, std::size_t kc, const float* a_panel,
-          const float* b_panel, float* c, std::size_t ldc, bool accumulate) {
+          const float* b_panel, float* c, std::size_t ldc, bool accumulate, const float* bias,
+          bool relu, bool last) {
     float tmp[kMR * kNR];
-    float* target = c;
-    std::size_t ld = ldc;
-    if (cols < kNR) {
-        target = tmp;
-        ld = kNR;
-        if (accumulate) {
-            for (std::size_t r = 0; r < rows; ++r)
-                for (std::size_t j = 0; j < cols; ++j) tmp[r * kNR + j] = c[r * ldc + j];
-        }
+    const bool full = cols == kNR;
+    float* target = full ? c : tmp;
+    const std::size_t ld = full ? ldc : kNR;
+    if (!full && accumulate) {
+        for (std::size_t r = 0; r < rows; ++r)
+            for (std::size_t j = 0; j < cols; ++j) tmp[r * kNR + j] = c[r * ldc + j];
     }
+    const float* kernel_bias = full && last ? bias : nullptr;
+    const bool kernel_relu = full && last && relu;
     switch (rows) {
         case 6:
-            micro_kernel<6>(kc, a_panel, b_panel, target, ld, accumulate);
+            micro_kernel<6>(kc, a_panel, b_panel, target, ld, accumulate, kernel_bias, kernel_relu);
             break;
         case 5:
-            micro_kernel<5>(kc, a_panel, b_panel, target, ld, accumulate);
+            micro_kernel<5>(kc, a_panel, b_panel, target, ld, accumulate, kernel_bias, kernel_relu);
             break;
         case 4:
-            micro_kernel<4>(kc, a_panel, b_panel, target, ld, accumulate);
+            micro_kernel<4>(kc, a_panel, b_panel, target, ld, accumulate, kernel_bias, kernel_relu);
             break;
         case 3:
-            micro_kernel<3>(kc, a_panel, b_panel, target, ld, accumulate);
+            micro_kernel<3>(kc, a_panel, b_panel, target, ld, accumulate, kernel_bias, kernel_relu);
             break;
         case 2:
-            micro_kernel<2>(kc, a_panel, b_panel, target, ld, accumulate);
+            micro_kernel<2>(kc, a_panel, b_panel, target, ld, accumulate, kernel_bias, kernel_relu);
             break;
         default:
-            micro_kernel<1>(kc, a_panel, b_panel, target, ld, accumulate);
+            micro_kernel<1>(kc, a_panel, b_panel, target, ld, accumulate, kernel_bias, kernel_relu);
             break;
     }
-    if (target == tmp) {
-        for (std::size_t r = 0; r < rows; ++r)
-            for (std::size_t j = 0; j < cols; ++j) c[r * ldc + j] = tmp[r * kNR + j];
+    if (!full) {
+        for (std::size_t r = 0; r < rows; ++r) {
+            for (std::size_t j = 0; j < cols; ++j) {
+                const float v = tmp[r * kNR + j];
+                c[r * ldc + j] = last ? epilogue1(v, bias, j, relu) : v;
+            }
+        }
     }
 }
 
@@ -127,7 +154,8 @@ void tile(std::size_t rows, std::size_t cols, std::size_t kc, const float* a_pan
 // A single row has too little work for the 6-row kernel (it would compute 5 rows of zeros),
 // and 2 accumulators per panel would leave the FMA units waiting on latency. So 4 panels are
 // processed together: 8 independent accumulators, the same A value broadcast into all.
-void gemv(const float* a, std::size_t K, std::size_t N, const float* b_panels, float* c) {
+void gemv(const float* a, std::size_t K, std::size_t N, const float* b_panels, float* c,
+          const float* bias, bool relu) {
     const std::size_t panels = (N + kNR - 1) / kNR;
     const std::size_t panel_stride = K * kNR;  // floats between consecutive panels
     std::size_t p = 0;
@@ -149,7 +177,8 @@ void gemv(const float* a, std::size_t K, std::size_t N, const float* b_panels, f
             _mm256_storeu_ps(out, acc[q][0]);
             _mm256_storeu_ps(out + 8, acc[q][1]);
             const std::size_t cols = min_size(kNR, N - col);
-            for (std::size_t j = 0; j < cols; ++j) c[col + j] = out[j];
+            for (std::size_t j = 0; j < cols; ++j)
+                c[col + j] = epilogue1(out[j], bias, col + j, relu);
         }
     }
     for (; p < panels; ++p) {  // leftover panels (fewer than 4)
@@ -165,21 +194,22 @@ void gemv(const float* a, std::size_t K, std::size_t N, const float* b_panels, f
         _mm256_storeu_ps(out + 8, acc1);
         const std::size_t col = p * kNR;
         const std::size_t cols = min_size(kNR, N - col);
-        for (std::size_t j = 0; j < cols; ++j) c[col + j] = out[j];
+        for (std::size_t j = 0; j < cols; ++j) c[col + j] = epilogue1(out[j], bias, col + j, relu);
     }
 }
 
 }  // namespace
 
 void gemm_avx2(const float* a, std::size_t M, std::size_t K, std::size_t N, const float* b_panels,
-               float* c, float* a_pack) {
+               float* c, float* a_pack, const float* bias, bool relu) {
     if (M == 0 || N == 0) return;
     if (K == 0) {  // empty sum: C = 0 (can't happen with Tensor, whose dims are >= 1)
-        for (std::size_t i = 0; i < M * N; ++i) c[i] = 0.0f;
+        for (std::size_t i = 0; i < M; ++i)
+            for (std::size_t j = 0; j < N; ++j) c[i * N + j] = epilogue1(0.0f, bias, j, relu);
         return;
     }
     if (M == 1) {
-        gemv(a, K, N, b_panels, c);
+        gemv(a, K, N, b_panels, c, bias, relu);
         return;
     }
     const std::size_t panel_stride = K * kNR;
@@ -188,6 +218,7 @@ void gemm_avx2(const float* a, std::size_t M, std::size_t K, std::size_t N, cons
         for (std::size_t pc = 0; pc < K; pc += kKC) {
             const std::size_t kc = min_size(kKC, K - pc);
             const bool accumulate = pc > 0;  // first depth block overwrites C
+            const bool last = pc + kc == K;  // the epilogue runs on the final values only
             for (std::size_t ic = 0; ic < M; ic += kMC) {
                 const std::size_t mc = min_size(kMC, M - ic);
                 pack_a(a + ic * K + pc, K, mc, kc, a_pack);
@@ -198,7 +229,7 @@ void gemm_avx2(const float* a, std::size_t M, std::size_t K, std::size_t N, cons
                     for (std::size_t ir = 0; ir < mc; ir += kMR) {
                         const std::size_t rows = min_size(kMR, mc - ir);
                         tile(rows, cols, kc, a_pack + ir * kc, b, c + (ic + ir) * N + col, N,
-                             accumulate);
+                             accumulate, bias ? bias + col : nullptr, relu, last);
                     }
                 }
             }

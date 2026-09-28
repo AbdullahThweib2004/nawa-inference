@@ -24,6 +24,7 @@
 #include "alloc_counter.hpp"
 #include "bench_common.hpp"
 #include "inference/model/model.hpp"
+#include "inference/runtime/workspace.hpp"
 
 namespace {
 
@@ -115,6 +116,12 @@ void memory_report() {
         if (batch == 256) {
             add_context("peak_rss_kib_after_predict_batch256", std::to_string(peak_rss_kib()));
         }
+        inference::Workspace workspace;
+        (void)model.predict(raw, workspace);  // buffers grow
+        const nawa_bench::AllocStats ws_before = nawa_bench::alloc_snapshot();
+        benchmark::DoNotOptimize(model.predict(raw, workspace).data());
+        const nawa_bench::AllocStats ws_used = nawa_bench::alloc_snapshot() - ws_before;
+        add_context("heap_allocs_per_workspace_predict_batch" + b, std::to_string(ws_used.count));
     }
 }
 

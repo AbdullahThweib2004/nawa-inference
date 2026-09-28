@@ -22,6 +22,11 @@ Tensor matmul(const Tensor& a, const Tensor& b);
 // Same, with an explicit kernel (tests use this to exercise every path).
 Tensor matmul(const Tensor& a, const Tensor& b, GemmKernel kernel);
 
+// Writes a · b into `out`, resizing it (and reusing its memory when it is big enough, so a
+// reused output allocates nothing). `out` must not be `a` or `b`.
+void matmul_into(const Tensor& a, const Tensor& b, Tensor& out,
+                 GemmKernel kernel = GemmKernel::Auto);
+
 // matmul() packs B only when A has at least this many rows (see matmul for why).
 inline constexpr std::size_t kMatmulPackMinRows = 3;
 
@@ -75,6 +80,20 @@ Tensor operator*(float s, const Tensor& b);
 Tensor operator/(float s, const Tensor& b);
 
 Tensor operator-(const Tensor& t);
+
+// Output-parameter versions of add/sub/mul/div: same broadcasting and results, but written
+// into `out` (resized, memory reused). `out` must not be `a` or `b`.
+void add_into(const Tensor& a, const Tensor& b, Tensor& out);
+void sub_into(const Tensor& a, const Tensor& b, Tensor& out);
+void mul_into(const Tensor& a, const Tensor& b, Tensor& out);
+void div_into(const Tensor& a, const Tensor& b, Tensor& out);
+
+// In-place kernels on raw contiguous data, used by the layers and by the model's
+// allocation-free execution path.
+void relu_inplace(float* data, std::size_t n);     // x < 0 ? 0 : x
+void sigmoid_inplace(float* data, std::size_t n);  // numerically stable sigmoid
+// Softmax over each of `rows` contiguous rows of `cols` values (numerically stable).
+void softmax_rows_inplace(float* data, std::size_t rows, std::size_t cols);
 
 // e^x for every element. Large inputs overflow to inf (IEEE); callers that need
 // stability, like Softmax, shift their inputs first.
