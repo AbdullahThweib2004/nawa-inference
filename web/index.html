@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Nawa · draw a digit, see the network</title>
+  <meta name="description" content="A handwritten digit classifier running on a from-scratch C++ inference engine.">
+  <link rel="stylesheet" href="style.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <h1>Nawa</h1>
+      <p class="tagline">Draw a digit. A neural network running on a from-scratch C++ engine reads it.</p>
+    </div>
+    <span id="status" class="status" role="status" aria-live="polite">Connecting…</span>
+  </header>
+
+  <div id="error-banner" class="banner" role="alert" hidden>
+    <span id="error-text"></span>
+    <button id="retry-btn" type="button">Retry</button>
+  </div>
+
+  <main class="layout">
+    <!-- Left: drawing -->
+    <section class="panel draw-panel" aria-labelledby="draw-title">
+      <h2 id="draw-title">Draw</h2>
+      <canvas id="pad" class="pad" width="280" height="280"
+              aria-label="Drawing area. Draw a single digit with the mouse, a pen or a finger."></canvas>
+      <div class="controls">
+        <button id="predict-btn" type="button" class="primary">Predict</button>
+        <button id="clear-btn" type="button">Clear</button>
+        <button id="example-btn" type="button" title="Draw a sample digit">Example</button>
+        <label class="toggle">
+          <input id="live-toggle" type="checkbox" checked>
+          <span>Live</span>
+        </label>
+      </div>
+      <p class="hint">Draw one digit, large. With “Live” on, it predicts when you lift the pen.</p>
+
+      <h3>What the model sees</h3>
+      <div class="seen-row">
+        <canvas id="seen" class="pixelated seen" width="28" height="28"
+                aria-label="The 28 by 28 image the model received after preprocessing"></canvas>
+        <p id="prep-note" class="muted small">
+          Your drawing is inverted if needed, cropped to the digit, scaled to 20 px and centered
+          by mass in 28 × 28, like the MNIST training images. That runs in C++ on the server.
+        </p>
+      </div>
+    </section>
+
+    <!-- Center: the network -->
+    <section class="panel net-panel" aria-labelledby="net-title">
+      <h2 id="net-title">The network, for this input</h2>
+      <svg id="net" class="net" viewBox="0 0 640 520" role="img"
+           aria-label="The network: 784 inputs, 128 hidden neurons, 10 outputs, with the strongest connections to the predicted digit">
+        <g id="links"></g>
+        <g id="input-map"></g>
+        <g id="hidden"></g>
+        <g id="outputs"></g>
+        <g id="labels"></g>
+      </svg>
+      <div class="legend small muted">
+        <span><i class="swatch on"></i> active hidden neuron</span>
+        <span><i class="swatch off"></i> switched off by ReLU</span>
+        <span><i class="swatch pos"></i> pushes toward the answer</span>
+        <span><i class="swatch neg"></i> pushes against it</span>
+      </div>
+      <div id="neuron-card" class="neuron-card" hidden>
+        <canvas id="neuron-map" class="pixelated neuron-map" width="28" height="28"
+                aria-label="Input weights of the selected hidden neuron"></canvas>
+        <div class="neuron-text">
+          <strong id="neuron-title">Hidden neuron</strong>
+          <div id="neuron-stats" class="small"></div>
+          <div class="small muted">Weight map: <span class="pos-text">red</span> pixels excite it,
+            <span class="neg-text">blue</span> pixels inhibit it.</div>
+        </div>
+      </div>
+      <p class="hint">Hover (or tap) a hidden neuron to see what it looks for.</p>
+    </section>
+
+    <!-- Right: result -->
+    <section class="panel result-panel" aria-labelledby="result-title">
+      <h2 id="result-title" class="visually-hidden">Result</h2>
+      <div class="prediction">
+        <span class="label">Prediction</span>
+        <span id="digit" class="digit" aria-live="polite">–</span>
+        <span id="confidence" class="confidence">Draw a digit to start</span>
+      </div>
+      <div id="unsure" class="warning" hidden>The model isn't sure: confidence is below 70%.</div>
+
+      <div id="bars" class="bars" aria-label="Probability for each digit"></div>
+
+      <fieldset class="variant">
+        <legend>Weights</legend>
+        <label><input type="radio" name="variant" value="fp32" checked> FP32</label>
+        <label><input id="int8-radio" type="radio" name="variant" value="int8" disabled> INT8</label>
+      </fieldset>
+
+      <dl class="stats">
+        <dt>Active hidden neurons</dt><dd id="active">–</dd>
+        <dt>Preprocess</dt><dd id="t-pre">–</dd>
+        <dt>Forward pass</dt><dd id="t-fwd">–</dd>
+        <dt>Server total</dt><dd id="t-total">–</dd>
+        <dt>Round trip</dt><dd id="t-rtt">–</dd>
+      </dl>
+
+      <details class="model-info" open>
+        <summary>Model</summary>
+        <dl id="model-info" class="stats small"></dl>
+      </details>
+    </section>
+  </main>
+
+  <footer class="footer small muted">
+    Nawa · inference engine in C++20 with no math libraries ·
+    MNIST MLP 784 → 128 → 10
+  </footer>
+</body>
+</html>

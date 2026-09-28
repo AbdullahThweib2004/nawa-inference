@@ -14,6 +14,7 @@
 #include "inference/model/model.hpp"
 #include "inference/model/tensor_io.hpp"
 #include "inference/tensor/ops.hpp"
+#include "test_paths.hpp"
 
 using namespace inference;
 namespace fs = std::filesystem;
@@ -34,14 +35,7 @@ const std::string kModelPath = std::string(NAWA_MODELS_DIR) + "/mnist_mlp.nawa";
 std::string fixture(const std::string& name) { return kFixtures + "/" + name + ".ntsr"; }
 
 // A fresh, empty directory for the current test's temporary files.
-fs::path temp_dir() {
-    const auto* info = ::testing::UnitTest::GetInstance()->current_test_info();
-    const fs::path dir = fs::path(::testing::TempDir()) /
-                         (std::string("nawa_") + info->test_suite_name() + "_" + info->name());
-    fs::remove_all(dir);
-    fs::create_directories(dir);
-    return dir;
-}
+fs::path temp_dir() { return test_temp_dir(); }
 
 // Builds binary files byte by byte, independently of the library's BinaryWriter, so a bug
 // in the writer can't hide the same bug in the reader.

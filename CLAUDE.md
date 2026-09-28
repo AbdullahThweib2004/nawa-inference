@@ -233,6 +233,56 @@ A lightweight neural network inference engine in C++, written from scratch. It i
 - Next INT8 step if needed: an AVX-512 VNNI kernel (`vpdpbusd`). Without VNNI, int8 is slower
   than the float32 GEMM at large batch on this CPU.
 
+## Web demo (`nawa serve`, `include/inference/server/`, `web/`)
+
+- **Run:** `./build/bin/nawa serve models/mnist_mlp.nawa --int8 models/mnist_mlp_int8.nawa
+  [--port 8080] [--host 127.0.0.1] [--web web]`, then open http://127.0.0.1:8080/. `--port 0`
+  picks a free port (printed on the first line). Ctrl+C/SIGTERM stops it cleanly.
+- **Dependencies:** cpp-httplib v0.58.0 and nlohmann/json v3.12.0, single headers via
+  FetchContent (URL + SHA-256), SYSTEM includes, used only by the `nawa_server` library.
+- **Layers of the backend:**
+  - `DemoService` (`demo_service.hpp`) holds ALL request logic as plain functions returning
+    `{status, json}`: `model_info()`, `predict(body)`, `neuron(id, variant)`. Tests call them
+    directly (`tests/test_server.cpp`).
+  - `HttpServer` (`http_server.hpp`) is thin cpp-httplib wiring: routes, static `web/`,
+    8 MiB body limit, timeouts, security headers (CSP `'self'`, nosniff), JSON errors for
+    anything else. **Keep handlers thin; put logic in DemoService.**
+- **Concurrency:** the `Model`s are immutable and shared by all requests. Each request
+  borrows its own `Workspace` from a mutex-protected pool in DemoService and returns it
+  afterwards. Never share a Workspace between concurrent requests.
+- **API:**
+  - `GET /api/model` returns variants (`fp32`, `int8` if loaded), per-model layers, plan,
+    parameters and format version, input shape and normalization, `hidden_size`, `classes`,
+    GEMM `kernel`, `threads`, and limits.
+  - `POST /api/predict` takes `{"width", "height" (1..1024), "pixels": [0..255] × w·h,
+    "variant": "fp32"|"int8"}` and returns `input28` (the 784 preprocessed pixels),
+    `preprocess {inverted, box}`, `hidden` (128, post-ReLU), `logits` (10), `probabilities`
+    (10), `prediction`, `confidence`, `top3`, `active_neurons`, `contributions` (the top 20
+    hidden→winner activation × weight, by magnitude), and
+    `timing_us {preprocess, forward, trace, total}`.
+  - Errors are `{"error": message}`: 400 for invalid input, 409 when int8 isn't loaded,
+    422 for an empty canvas, 413 for a body too large, 404 for unknown routes.
+  - `GET /api/neuron/<id>?variant=` returns 784 input weights (28×28), `bias`, 10
+    `outgoing`, `min`/`max`. 400 for a non-numeric id, 404 when it's out of range.
+- **The trace survives fusion:** `Model::predict_trace(raw, workspace)` runs the same fused
+  plan as `predict` and returns every step's output (`preprocess`, `Linear… + ReLU`, logits,
+  probabilities), bit-identical to `predict` and to the unfused `forward_trace`. `timing_us.forward`
+  measures the real `predict`, not the trace.
+- **Preprocessing stays in C++** (`mnist_preprocess`): the browser sends raw grayscale pixels.
+- **Frontend** (`web/`, no framework, no build step, no CDN):
+  - `index.html` has three columns: draw / network (SVG) / result.
+  - `style.css` has light/dark via CSS variables and `prefers-color-scheme`, a responsive grid,
+    `prefers-reduced-motion`, and `[hidden] { display: none !important }`.
+  - `app.js` covers the Pointer Events drawing pad, the one-request-at-a-time predict queue,
+    rendering (bars, 28×28 views, network nodes and links), neuron weight maps (cached
+    `/api/neuron`), the FP32/INT8 switch, and an error banner.
+  - `#example` in the URL (or the Example button) draws a sample digit.
+- **Tests:** `tests/test_server.cpp` (service functions, trace vs fixtures, concurrency,
+  in-process HTTP) and CTest `cli.serve_smoke` (`tests/server_smoke.py` starts the real binary
+  on a free port).
+- Temp files in tests go through `tests/test_paths.hpp` (the directory name includes the pid),
+  because CTest runs the two test passes in parallel.
+
 ## Build option `NAWA_NATIVE` (default OFF)
 
 - `-DNAWA_NATIVE=ON` adds `-march=native` to every target. The compiler then targets

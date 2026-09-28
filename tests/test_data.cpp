@@ -14,6 +14,7 @@
 #include "inference/model/binary_io.hpp"
 #include "inference/model/model.hpp"
 #include "inference/tensor/ops.hpp"
+#include "test_paths.hpp"
 
 using namespace inference;
 namespace fs = std::filesystem;
@@ -27,13 +28,7 @@ namespace {
 const std::string kRoot = NAWA_SOURCE_DIR;
 const std::string kModelPath = kRoot + "/models/mnist_mlp.nawa";
 
-fs::path temp_file(const std::string& name) {
-    const auto* info = ::testing::UnitTest::GetInstance()->current_test_info();
-    const fs::path dir = fs::path(::testing::TempDir()) /
-                         (std::string("nawa_") + info->test_suite_name() + "_" + info->name());
-    fs::create_directories(dir);
-    return dir / name;
-}
+fs::path temp_file(const std::string& name) { return test_temp_dir(false) / name; }
 
 // Writes an IDX file byte by byte: magic [0, 0, type, ndim], BIG-endian u32 dims, data.
 std::string write_idx(const std::string& name, std::vector<std::uint8_t> magic,

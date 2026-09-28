@@ -6,7 +6,9 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
+#include <csignal>
 #include <cstddef>
 #include <cstdint>
 #include <exception>
@@ -20,12 +22,15 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 #include "inference/data/digit_preprocess.hpp"
 #include "inference/data/idx.hpp"
 #include "inference/data/image_io.hpp"
 #include "inference/model/model.hpp"
+#include "inference/server/demo_service.hpp"
+#include "inference/server/http_server.hpp"
 
 using namespace inference;
 
@@ -51,6 +56,10 @@ void print_usage(std::ostream& os) {
           "  nawa quantize <in.nawa> <out.nawa>\n"
           "      Convert a float32 model to INT8 weights (format version 2, ~4x smaller).\n"
           "      eval and predict accept the result like any model.\n"
+          "  nawa serve <model.nawa> [--int8 <model.nawa>] [--port 8080] [--host 127.0.0.1]\n"
+          "             [--web <dir>]\n"
+          "      Web demo: draw a digit in the browser, the C++ engine classifies it.\n"
+          "      Serves web/ and a JSON API; --port 0 picks a free port.\n"
           "  nawa predict <model.nawa> <image> [--no-preprocess] [--show]\n"
           "      Classify a digit image (PNG, JPEG, BMP, ...). --show prints the 28x28 input\n"
           "      as ASCII art; --no-preprocess only resizes to 28x28 (for comparison).\n";
@@ -290,6 +299,54 @@ int cmd_quantize(int argc, char** argv) {
 }
 
 // ---------------------------------------------------------------------------
+// nawa serve
+// ---------------------------------------------------------------------------
+
+// Set by SIGINT/SIGTERM. A signal handler may only do async-signal-safe work, so it just sets
+// this flag; a watcher thread notices it and stops the server from normal code.
+volatile std::sig_atomic_t g_stop_requested = 0;
+extern "C" void on_stop_signal(int) { g_stop_requested = 1; }
+
+int cmd_serve(int argc, char** argv) {
+    const Args args = parse_args(argc, argv, 2, {}, {"--int8", "--port", "--host", "--web"});
+    if (args.positional.size() != 1) throw UsageError("serve takes exactly one model path");
+    inference::server::ServerOptions options;
+    options.host = args.value("--host").value_or("127.0.0.1");
+    options.web_dir = args.value("--web").value_or(std::string(NAWA_SOURCE_DIR) + "/web");
+    if (const auto p = args.value("--port")) {
+        try {
+            options.port = std::stoi(*p);
+        } catch (const std::exception&) {
+            options.port = -1;
+        }
+        if (options.port < 0 || options.port > 65535) throw UsageError("--port must be 0..65535");
+    }
+
+    std::optional<Model> int8;
+    if (const auto path = args.value("--int8")) int8.emplace(*path);
+    const inference::server::DemoService service(Model(args.positional[0]), std::move(int8));
+    inference::server::HttpServer http(service, options);
+    const int port = http.bind();
+    std::cout << "Nawa web demo: http://" << options.host << ":" << port << "/"
+              << "   (Ctrl+C to stop)" << std::endl;  // flushed: scripts read the port from it
+
+    std::signal(SIGINT, on_stop_signal);
+    std::signal(SIGTERM, on_stop_signal);
+    std::atomic<bool> finished{false};
+    std::thread watcher([&] {
+        while (!finished.load() && !g_stop_requested) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+        http.stop();
+    });
+    http.run();  // blocks until stop()
+    finished = true;
+    watcher.join();
+    std::cout << "Stopped." << std::endl;
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
 // nawa predict
 // ---------------------------------------------------------------------------
 
@@ -350,6 +407,7 @@ int main(int argc, char** argv) {
         if (command == "eval") return cmd_eval(argc, argv);
         if (command == "predict") return cmd_predict(argc, argv);
         if (command == "quantize") return cmd_quantize(argc, argv);
+        if (command == "serve") return cmd_serve(argc, argv);
         throw UsageError("unknown command '" + command + "'");
     } catch (const UsageError& e) {
         std::cerr << "nawa: " << e.what() << "\n\n";

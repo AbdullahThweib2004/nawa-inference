@@ -121,6 +121,24 @@ The preprocessing inverts dark-on-light images, crops to the digit, scales it to
 centers it the way MNIST does. `--show` lets you check what the model actually sees. Photos
 with shadows or uneven lighting may need cropping and more contrast first.
 
+## Web demo
+
+Draw a digit in the browser and watch the network classify it: the input it sees, which
+hidden neurons fire, the strongest connections to the answer, probabilities and timings. The
+browser only draws; preprocessing and inference run in the C++ engine.
+
+```bash
+cmake -S . -B build && cmake --build build -j
+./build/bin/nawa serve models/mnist_mlp.nawa --int8 models/mnist_mlp_int8.nawa
+```
+
+Then open **http://127.0.0.1:8080/**. Options: `--port 8080` (`0` picks a free port),
+`--host 127.0.0.1` (localhost only by default), `--web <dir>` (frontend files, default `web/`).
+Stop it with Ctrl+C. Plain HTML/CSS/JavaScript (no framework, no internet needed). The
+**Example** button draws a sample digit if you'd rather not draw.
+
+<!-- screenshot: docs/web-demo.png -->
+
 ## Performance
 
 Measured on an Intel i7-11370H laptop (4 cores, AVX2 + FMA), default portable build. The

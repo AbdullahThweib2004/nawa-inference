@@ -24,6 +24,7 @@
 #include "inference/tensor/int8.hpp"
 #include "inference/tensor/ops.hpp"
 #include "inference/tensor/reference.hpp"
+#include "test_paths.hpp"
 
 using namespace inference;
 namespace fs = std::filesystem;
@@ -49,13 +50,7 @@ bool bit_equal(const Tensor& a, const Tensor& b) {
            std::memcmp(a.data(), b.data(), a.numel() * sizeof(float)) == 0;
 }
 
-fs::path temp_file(const std::string& name) {
-    const auto* info = ::testing::UnitTest::GetInstance()->current_test_info();
-    const fs::path dir = fs::path(::testing::TempDir()) /
-                         (std::string("nawa_") + info->test_suite_name() + "_" + info->name());
-    fs::create_directories(dir);
-    return dir / name;
-}
+fs::path temp_file(const std::string& name) { return test_temp_dir(false) / name; }
 
 std::vector<GemmKernel> kernels() {
     std::vector<GemmKernel> out;

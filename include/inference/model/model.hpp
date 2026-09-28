@@ -59,6 +59,18 @@ public:
     // use. One Workspace per thread; the Model itself can be shared (see workspace.hpp).
     const Tensor& predict(const Tensor& raw, Workspace& workspace) const;
 
+    // One recorded step of predict_trace().
+    struct TraceStep {
+        std::string name;  // "preprocess", a layer name, or "<Linear...> + ReLU" when fused
+        Tensor output;     // that step's output, {N, features}
+    };
+
+    // Runs EXACTLY what predict(raw, workspace) runs (the fused execution plan) and returns
+    // every step's output, starting with the normalized input. With a fused Linear+ReLU, the
+    // hidden activations appear after the ReLU, as the fused step's output. Results are
+    // bit-identical to predict(). Allocates (it copies each output); for inspection only.
+    std::vector<TraceStep> predict_trace(const Tensor& raw, Workspace& workspace) const;
+
     // Like forward(), but returns the output of every layer, in order (for debugging).
     std::vector<Tensor> forward_trace(const Tensor& normalized) const;
 
@@ -98,6 +110,10 @@ public:
 
 private:
     Model() = default;  // used by load()
+
+    // Shared by predict() and predict_trace(): runs the plan; records steps if trace != nullptr.
+    const Tensor& run_plan(const Tensor& raw, Workspace& workspace,
+                           std::vector<TraceStep>* trace) const;
 
     // Builds plan_ from layers_ (fusing Linear + ReLU).
     void build_plan();

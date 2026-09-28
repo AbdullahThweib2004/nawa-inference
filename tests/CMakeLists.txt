@@ -46,11 +46,13 @@ add_executable(inference_tests
     test_memory.cpp
     test_threads.cpp
     test_int8.cpp
+    test_server.cpp
     alloc_hook.cpp
 )
 target_link_libraries(inference_tests PRIVATE
     inference_core
     nawa_image
+    nawa_server
     inference_warnings
     GTest::gtest_main  # provides main(), so test files contain only TEST()s
 )

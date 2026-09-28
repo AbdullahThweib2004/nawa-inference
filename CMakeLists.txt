@@ -179,6 +179,41 @@ target_link_libraries(nawa_image
 )
 
 # ---------------------------------------------------------------------------
+# Web demo server (`nawa serve`): cpp-httplib + nlohmann/json, both single headers, pinned to a
+# release and verified by SHA-256 like stb_image. Used only by the nawa_server library.
+# ---------------------------------------------------------------------------
+FetchContent_Declare(
+    cpp_httplib
+    URL      https://raw.githubusercontent.com/yhirose/cpp-httplib/v0.58.0/httplib.h
+    URL_HASH SHA256=aa14e7e7bd2703694e0a6b6855af3b8c406102ab1fc56ac905fe33619b31faa5
+    DOWNLOAD_NO_EXTRACT TRUE
+)
+FetchContent_Declare(
+    nlohmann_json
+    URL      https://raw.githubusercontent.com/nlohmann/json/v3.12.0/single_include/nlohmann/json.hpp
+    URL_HASH SHA256=aaf127c04cb31c406e5b04a63f1ae89369fccde6d8fa7cdda1ed4f32dfc5de63
+    DOWNLOAD_NO_EXTRACT TRUE
+)
+FetchContent_MakeAvailable(cpp_httplib nlohmann_json)
+# The header is included as <nlohmann/json.hpp>, so give it that directory layout.
+file(COPY ${nlohmann_json_SOURCE_DIR}/json.hpp
+     DESTINATION ${CMAKE_BINARY_DIR}/_deps/nlohmann_include/nlohmann)
+
+add_library(nawa_server STATIC
+    src/server/demo_service.cpp
+    src/server/http_server.cpp
+)
+# SYSTEM: warnings from inside the two big third-party headers don't fail our -Werror build.
+target_include_directories(nawa_server SYSTEM PUBLIC
+    ${cpp_httplib_SOURCE_DIR}
+    ${CMAKE_BINARY_DIR}/_deps/nlohmann_include
+)
+target_link_libraries(nawa_server
+    PUBLIC inference_core Threads::Threads
+    PRIVATE inference_warnings
+)
+
+# ---------------------------------------------------------------------------
 # Subprojects
 # ---------------------------------------------------------------------------
 if(ENABLE_TESTS)

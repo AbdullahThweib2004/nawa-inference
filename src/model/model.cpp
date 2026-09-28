@@ -327,6 +327,18 @@ Tensor Model::predict(const Tensor& raw) const {
 }
 
 const Tensor& Model::predict(const Tensor& raw, Workspace& workspace) const {
+    return run_plan(raw, workspace, nullptr);
+}
+
+std::vector<Model::TraceStep> Model::predict_trace(const Tensor& raw, Workspace& workspace) const {
+    std::vector<TraceStep> trace;
+    trace.reserve(plan_.size() + 1);
+    run_plan(raw, workspace, &trace);
+    return trace;
+}
+
+const Tensor& Model::run_plan(const Tensor& raw, Workspace& workspace,
+                              std::vector<TraceStep>* trace) const {
     // Shape check without building strings or temporaries (unless it fails).
     std::size_t rows = 0;
     if (raw.ndim() == 2 && raw.size(1) == input_features_) {
@@ -343,6 +355,7 @@ const Tensor& Model::predict(const Tensor& raw, Workspace& workspace) const {
     Tensor* other = &workspace.buffer(1);
     current->resize(rows, input_features_);
     preprocess_into(raw.data(), rows * input_features_, current->data());
+    if (trace) trace->push_back({"preprocess", *current});
 
     for (const Step& step : plan_) {
         if (const auto* linear = dynamic_cast<const DenseLayer*>(step.layer)) {
@@ -361,6 +374,13 @@ const Tensor& Model::predict(const Tensor& raw, Workspace& workspace) const {
             // own forward(), which allocates. Not used by the MNIST model.
             *other = step.layer->forward(*current);
             std::swap(current, other);
+        }
+        // Tracing copies each step's output (the in-place steps that follow would otherwise
+        // overwrite it, e.g. Softmax turning the logits into probabilities). predict() passes
+        // no trace, so its hot path copies and allocates nothing.
+        if (trace) {
+            trace->push_back(
+                {step.fuse_relu ? step.layer->name() + " + ReLU" : step.layer->name(), *current});
         }
     }
     return *current;
