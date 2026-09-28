@@ -21,14 +21,15 @@ Early development. Done so far:
 - the tensor data structure
 - math operations: matmul, transpose, element-wise ops with broadcasting, reductions
 - inference layers: Linear, ReLU, Sigmoid, Softmax
+- a trained MNIST model exported to the [Nawa model format](docs/model_format.md)
 
-Model loading and trained weights are next.
+The C++ model loader and runtime are next.
 
 - [x] 1. Project scaffolding
 - [x] 2. Tensor core
 - [x] 3. Tensor operations
 - [x] 4. Layers
-- [ ] 5. Python training and weight export (MNIST)
+- [x] 5. Python training and weight export (MNIST)
 - [ ] 6. Model loading and runtime
 - [ ] 7. End-to-end MNIST inference
 - [ ] 8. Benchmarking
@@ -71,6 +72,25 @@ cmake -S . -B build-debug -DCMAKE_BUILD_TYPE=Debug -DENABLE_SANITIZERS=ON
 cmake --build build-debug -j
 ctest --test-dir build-debug --output-on-failure
 ```
+
+## Train and export (Python)
+
+Python is used only to train the MNIST model and export it for the C++ engine. The
+exported model (`models/mnist_mlp.nawa`) and test fixtures (`tests/fixtures/`) are
+committed, so you only need these steps to retrain.
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -r python/requirements.txt
+
+python python/train.py           # downloads MNIST to data/, trains, saves models/mnist_mlp.pt
+python python/export.py          # writes models/mnist_mlp.nawa and tests/fixtures/*.ntsr
+python python/verify_export.py   # numpy-only forward pass, checked against PyTorch's outputs
+python -m pytest python/tests    # format round-trip and validation tests
+```
+
+The file format is specified in [docs/model_format.md](docs/model_format.md).
 
 ### CMake options
 

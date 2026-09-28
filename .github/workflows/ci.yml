@@ -72,3 +72,24 @@ jobs:
           # Make UBSan findings fail the test instead of only printing a warning.
           UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
         run: ctest --test-dir build --output-on-failure
+
+  python-format:
+    name: Python format + export check (numpy only)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      # Deliberately no torch: the format module and the verification script must work
+      # with numpy alone, against the committed model and fixtures.
+      - name: Install numpy and pytest
+        run: python -m pip install "numpy>=1.24" "pytest>=7.0"
+
+      - name: Format tests
+        run: python -m pytest python/tests -v
+
+      - name: Verify committed model against PyTorch fixtures
+        run: python python/verify_export.py

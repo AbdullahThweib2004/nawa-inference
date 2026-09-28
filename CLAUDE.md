@@ -82,6 +82,25 @@ A lightweight neural network inference engine in C++, written from scratch. It i
 - Activations (ReLU, Sigmoid, Softmax) keep the input shape and have no parameters.
   Softmax takes an `axis` (default -1).
 
+## Model format and Python export
+
+- **[docs/model_format.md](docs/model_format.md) is the contract** between Python and C++.
+  It covers `.nawa` model files and `.ntsr` tensor files: little-endian, no padding, with
+  strict validation. Change the spec first, and bump the version for any layout change.
+  `python/nawa_format.py` is the reference reader/writer (numpy only).
+- The **exporter transposes** PyTorch Linear weights (`{out, in}` → `{in, out}`).
+- Training uses `CrossEntropyLoss` on logits, so the training model has no Softmax. The
+  **exporter appends `Softmax(axis=-1)`**, and the `.nawa` model outputs probabilities.
+- **Normalization lives in the model metadata** (`pixel_scale = 1/255`, `mean = 0.1307`,
+  `std = 0.3081`). The C++ runtime must apply `x = (raw * pixel_scale - mean) / std` to
+  raw 0..255 input before the first layer. Fixtures hold RAW pixels.
+- Committed artifacts: `models/mnist_mlp.nawa`, `tests/fixtures/*.ntsr` (per-layer outputs
+  for the first 3 test images, and probabilities for the first 100). `data/` and `*.pt`
+  are gitignored.
+- Python lives in `python/` and runs from the repo-root venv `.venv`
+  (`pip install -r python/requirements.txt`). CI runs `pytest python/tests` and
+  `verify_export.py` with numpy only (no torch).
+
 ## Workflow rules
 
 - Every new feature comes with GoogleTest tests in `tests/`.
@@ -118,8 +137,8 @@ To add a test file, create `tests/test_<name>.cpp` and add it to `inference_test
 2. Tensor core (storage, shape, strides, indexing) ✅
 3. Tensor operations (elementwise, matmul, reductions) ✅
 4. Layers (Linear, ReLU, Sigmoid, Softmax) ✅
-5. **Python training and weight export (PyTorch, MNIST)** ← *current step*
-6. Model loading and runtime (file format, computational graph, executor)
+5. Python training and weight export (PyTorch, MNIST) ✅
+6. **Model loading and runtime (file format, computational graph, executor)** ← *current step*
 7. End-to-end MNIST inference
 8. Benchmarking infrastructure
 9. Optimization (threads, SIMD, INT8 quantization)

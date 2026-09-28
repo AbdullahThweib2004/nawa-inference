@@ -30,15 +30,20 @@ Testing/
 .venv/
 venv/
 __pycache__/
+.pytest_cache/
 *.py[cod]
 .ipynb_checkpoints/
 *.egg-info/
 
 # --- Datasets and model files (large, regenerable) ---
 data/
+models/*.pt
 *.bin
 *.pt
 *.pth
 *.onnx
 *.npy
 *.npz
+
+# Committed on purpose: models/mnist_mlp.nawa and tests/fixtures/*.ntsr (small, needed by
+# the C++ end-to-end tests and CI).
