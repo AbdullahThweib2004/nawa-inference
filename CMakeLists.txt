@@ -65,6 +65,7 @@ add_library(inference_core STATIC
     src/version.cpp
     src/tensor/tensor.cpp
     src/tensor/ops.cpp
+    src/tensor/reference.cpp
     src/layers/linear.cpp
     src/layers/activations.cpp
     src/model/binary_io.cpp

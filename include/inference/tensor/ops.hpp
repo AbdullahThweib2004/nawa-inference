@@ -13,6 +13,7 @@ namespace inference {
 // ---------------------------------------------------------------------------
 
 // Matrix product: a is {M, K}, b is {K, N}, the result is {M, N}.
+// Optimized; the original naive version is kept as matmul_naive() in reference.hpp.
 // Throws std::invalid_argument if either input is not 2-D or the inner dimensions differ.
 Tensor matmul(const Tensor& a, const Tensor& b);
 

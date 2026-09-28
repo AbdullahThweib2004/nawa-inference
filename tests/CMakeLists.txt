@@ -42,6 +42,7 @@ add_executable(inference_tests
     test_layers.cpp
     test_model.cpp
     test_data.cpp
+    test_matmul_diff.cpp
 )
 target_link_libraries(inference_tests PRIVATE
     inference_core

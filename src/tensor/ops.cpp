@@ -6,6 +6,8 @@
 #include <string>
 #include <utility>
 
+#include "matmul_shapes.hpp"
+
 namespace inference {
 
 namespace {
@@ -165,41 +167,37 @@ std::size_t slice_argmax(const float* first, std::size_t count, std::size_t stri
 // ---------------------------------------------------------------------------
 
 Tensor matmul(const Tensor& a, const Tensor& b) {
-    if (a.ndim() != 2 || b.ndim() != 2) {
-        throw std::invalid_argument("matmul: expected two 2-D tensors, got shapes " +
-                                    shape_to_string(a.shape()) + " and " +
-                                    shape_to_string(b.shape()));
-    }
-    const std::size_t M = a.size(0);
-    const std::size_t K = a.size(1);
-    const std::size_t N = b.size(1);
-    if (b.size(0) != K) {
-        throw std::invalid_argument(
-            "matmul: inner dimensions don't match: " + shape_to_string(a.shape()) + " x " +
-            shape_to_string(b.shape()) + " (" + std::to_string(K) +
-            " != " + std::to_string(b.size(0)) + ")");
-    }
+    const auto [M, K, N] = detail::check_matmul_shapes(a, b, "matmul");
 
-    Tensor out({M, N});
+    Tensor out({M, N});  // zero-initialized: the loop below accumulates into it
     const float* A = a.data();
     const float* B = b.data();
     float* C = out.data();
 
-    // Naive i-j-k loop: C[i][j] = sum over k of A[i][k] * B[k][j].
+    // i-k-j loop order: for each row i of A and each k, add A[i][k] * (row k of B) to row i
+    // of C. Mathematically the same sum as the naive i-j-k loop (matmul_naive), in the same
+    // order of k for every C[i][j], but the memory access pattern is completely different:
     //
-    // This loop order is cache-unfriendly for B. The inner loop moves k forward, which
-    // walks A along a row (consecutive addresses, good) but walks B down a COLUMN:
-    // B[k*N + j] and B[(k+1)*N + j] are N floats apart, so almost every read of B lands
-    // on a different cache line. For large N, B is effectively read from main memory.
-    // Reordering the loops (i-k-j) or tiling fixes this; that is saved for the
-    // optimization step, where it will be measured with a benchmark.
+    //  - The inner loop walks j, so it reads B[k][0..N) and updates C[i][0..N): both are
+    //    CONTIGUOUS rows. Every byte of every cache line fetched is used, and the hardware
+    //    prefetcher can stream the next lines ahead of time.
+    //  - A[i][k] is one scalar for the whole inner loop, hoisted into a register.
+    //  - Each C[i][j] is updated by a different iteration, so the iterations are
+    //    INDEPENDENT: there is no running `acc` that every step must wait for. The compiler
+    //    can therefore process several j at once with SIMD instructions (mulps/addps),
+    //    without reordering any float additions.
+    //
+    // Remaining weakness: C's row is loaded and stored once per k (K times in total) instead
+    // of being kept in registers. Tiling (step 9.3) addresses that.
     for (std::size_t i = 0; i < M; ++i) {
-        for (std::size_t j = 0; j < N; ++j) {
-            float acc = 0.0f;
-            for (std::size_t k = 0; k < K; ++k) {
-                acc += A[i * K + k] * B[k * N + j];
+        float* c_row = C + i * N;
+        const float* a_row = A + i * K;
+        for (std::size_t k = 0; k < K; ++k) {
+            const float a_ik = a_row[k];
+            const float* b_row = B + k * N;
+            for (std::size_t j = 0; j < N; ++j) {
+                c_row[j] += a_ik * b_row[j];
             }
-            C[i * N + j] = acc;
         }
     }
     return out;

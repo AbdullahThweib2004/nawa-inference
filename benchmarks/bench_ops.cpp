@@ -7,6 +7,7 @@
 #include "bench_common.hpp"
 #include "inference/layers/activations.hpp"
 #include "inference/tensor/ops.hpp"
+#include "inference/tensor/reference.hpp"
 
 using namespace inference;
 using nawa_bench::random_tensor;
@@ -23,7 +24,8 @@ benchmark::Counter rate(double per_iteration) {
 // One multiply-add per (i, j, k) = 2 floating-point operations, so 2*M*K*N FLOP per call.
 // ---------------------------------------------------------------------------
 
-void BM_Matmul(benchmark::State& state) {
+// Shared body for the optimized and the reference matmul, so both are measured identically.
+void run_matmul(benchmark::State& state, Tensor (*fn)(const Tensor&, const Tensor&)) {
     const auto M = static_cast<std::size_t>(state.range(0));
     const auto K = static_cast<std::size_t>(state.range(1));
     const auto N = static_cast<std::size_t>(state.range(2));
@@ -31,7 +33,7 @@ void BM_Matmul(benchmark::State& state) {
     const Tensor b = random_tensor({K, N}, 2);
     nawa_bench::LoopMeter meter;
     for (auto _ : state) {
-        Tensor c = matmul(a, b);
+        Tensor c = fn(a, b);
         benchmark::DoNotOptimize(c.data());  // the result must be treated as used
         benchmark::ClobberMemory();
     }
@@ -44,18 +46,26 @@ void BM_Matmul(benchmark::State& state) {
             flop * static_cast<double>(state.iterations()) / static_cast<double>(meter.cycles());
     }
 }
-BENCHMARK(BM_Matmul)
-    ->ArgNames({"M", "K", "N"})
-    ->Args({32, 32, 32})
-    ->Args({64, 64, 64})
-    ->Args({128, 128, 128})
-    ->Args({256, 256, 256})
-    ->Args({512, 512, 512})
-    ->Args({1024, 1024, 1024})
-    ->Args({1, 784, 128})    // MNIST layer 1, one image
-    ->Args({256, 784, 128})  // MNIST layer 1, batch 256
-    ->Args({256, 128, 10})   // MNIST layer 2, batch 256
-    ->Unit(benchmark::kMicrosecond);
+
+// The same shapes for both, so one run compares them directly.
+void matmul_shapes(benchmark::Benchmark* b) {
+    b->ArgNames({"M", "K", "N"})
+        ->Args({32, 32, 32})
+        ->Args({64, 64, 64})
+        ->Args({128, 128, 128})
+        ->Args({256, 256, 256})
+        ->Args({512, 512, 512})
+        ->Args({1024, 1024, 1024})
+        ->Args({1, 784, 128})    // MNIST layer 1, one image
+        ->Args({256, 784, 128})  // MNIST layer 1, batch 256
+        ->Args({256, 128, 10})   // MNIST layer 2, batch 256
+        ->Unit(benchmark::kMicrosecond);
+}
+
+void BM_Matmul(benchmark::State& state) { run_matmul(state, matmul); }
+void BM_MatmulNaive(benchmark::State& state) { run_matmul(state, matmul_naive); }
+BENCHMARK(BM_Matmul)->Apply(matmul_shapes);
+BENCHMARK(BM_MatmulNaive)->Apply(matmul_shapes);
 
 // ---------------------------------------------------------------------------
 // Memory-bound ops: measured in GB/s of the MINIMUM traffic (every input byte read once,
