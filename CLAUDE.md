@@ -371,8 +371,13 @@ To add a test file, create `tests/test_<name>.cpp` and add it to `inference_test
 - For every roadmap step: finish the step → all tests pass → commit → `git push`.
 - Never commit build output, model binaries, or secrets (see `.gitignore`).
 - No co-author trailers or AI attribution lines in commit messages or PR descriptions
-  (no `Co-Authored-By:` for AI tools, no "Generated with ..." lines). `.claude/settings.json`
-  sets `attribution` to empty strings to enforce this.
+  (no `Co-Authored-By:` for AI tools, no "Generated with ..." lines). Enforced three ways:
+  - `.claude/settings.json` (project) and `~/.claude/settings.json` (user) set
+    `"attribution": {"commit": "", "pr": "", "sessionUrl": false}`.
+  - `.githooks/commit-msg` rejects such lines. Enable it once per clone with
+    `git config core.hooksPath .githooks`.
+- The history was rewritten once to remove old trailers. Never push `backup-before-rewrite`
+  (a local-only branch with the old history).
 
 ## Roadmap
 

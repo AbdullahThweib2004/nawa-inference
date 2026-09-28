@@ -1,0 +1,8 @@
+#!/bin/sh
+# Rejects commit messages with AI attribution (project rule, see CLAUDE.md "Git workflow").
+# Enable once per clone:  git config core.hooksPath .githooks
+if grep -qiE '^co-authored-by:.*(claude|anthropic)|generated with \[?claude code' "$1"; then
+    echo "commit-msg: AI co-author/attribution lines are not allowed in this repository." >&2
+    echo "Remove the Co-Authored-By / 'Generated with' line and commit again." >&2
+    exit 1
+fi
