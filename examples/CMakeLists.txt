@@ -6,8 +6,11 @@ function(add_example name)
     set_target_properties(${name} PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR}/bin
     )
+    # Lets examples find models/ and tests/fixtures/ from any working directory.
+    target_compile_definitions(${name} PRIVATE NAWA_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
 endfunction()
 
 add_example(tensor_basics)
 add_example(ops_basics)
 add_example(mlp_forward)
+add_example(predict_digits)

@@ -22,15 +22,16 @@ Early development. Done so far:
 - math operations: matmul, transpose, element-wise ops with broadcasting, reductions
 - inference layers: Linear, ReLU, Sigmoid, Softmax
 - a trained MNIST model exported to the [Nawa model format](docs/model_format.md)
+- a C++ model loader and runtime that matches PyTorch's outputs (max error < 1e-6)
 
-The C++ model loader and runtime are next.
+End-to-end MNIST inference tooling is next.
 
 - [x] 1. Project scaffolding
 - [x] 2. Tensor core
 - [x] 3. Tensor operations
 - [x] 4. Layers
 - [x] 5. Python training and weight export (MNIST)
-- [ ] 6. Model loading and runtime
+- [x] 6. Model loading and runtime
 - [ ] 7. End-to-end MNIST inference
 - [ ] 8. Benchmarking
 - [ ] 9. Optimization (threads, SIMD, INT8)
@@ -63,6 +64,7 @@ Run the examples (all example programs are built into `build/bin/`):
 ./build/bin/tensor_basics   # creating, indexing, reshaping and printing tensors
 ./build/bin/ops_basics      # a manual Linear layer: y = x · W + b
 ./build/bin/mlp_forward     # a tiny 2-layer network built from Layer objects
+./build/bin/predict_digits  # load models/mnist_mlp.nawa and classify 10 test digits
 ```
 
 Debug build with AddressSanitizer + UndefinedBehaviorSanitizer:

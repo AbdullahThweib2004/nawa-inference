@@ -101,6 +101,37 @@ A lightweight neural network inference engine in C++, written from scratch. It i
   (`pip install -r python/requirements.txt`). CI runs `pytest python/tests` and
   `verify_export.py` with numpy only (no torch).
 
+## Model loading and runtime (`include/inference/model/`)
+
+- **Reading approach** (`binary_io.hpp`): read the whole file into a
+  `std::vector<std::byte>`, then parse it with `BinaryReader`, a cursor that bounds-checks
+  every read. Values are copied out with `std::memcpy`, **never** by `reinterpret_cast`ing
+  the buffer to `float*`/`uint32_t*` (that breaks strict aliasing and may be misaligned).
+  A `static_assert` requires a little-endian host. Array sizes are checked **before**
+  allocating.
+- **`ModelFormatError`** (derives from `std::runtime_error`): its message has the file
+  path, the byte offset of the bad field, and expected vs. found. I/O failures (a missing
+  file) throw plain `std::runtime_error`.
+- `tensor_io.hpp`: `read_tensor_block`/`write_tensor_block` and
+  `read_tensor_file`/`write_tensor_file` (`.ntsr`), with the same checks as the Python
+  reader.
+- **`Model`** (`model.hpp`): `Model::load(path)` or `Model model(path)`. It holds the
+  metadata (`input_shape`, `pixel_scale`, `mean`, `stddev`) and a
+  `std::vector<std::unique_ptr<Layer>>` built by a factory switch on the layer type id.
+  - **The layer chain is validated at load time**: the first Linear's `in_features` must
+    equal `numel(input_shape)`, each Linear's must equal the previous Linear's
+    `out_features`, and Softmax's axis must be in -2..1. A model that loads can run.
+  - The runtime supports `norm_count == 1` only (the spec allows more). Anything else is
+    rejected with a clear error.
+  - API: `preprocess(raw)` = `(raw * pixel_scale - mean) / stddev`; `forward(normalized)`;
+    `predict(raw)` = both; `forward_trace(normalized)` = every layer's output;
+    `classify(raw)` → `{label, confidence}` per row; `summary()`; `num_parameters()`.
+  - Input must be `{N, F}` or a single sample `{F}`, where `F = input_features()`.
+    `{F}` is treated as `{1, F}`, and anything else throws `std::invalid_argument`.
+- Tests find `models/` and `tests/fixtures/` through the compile definitions
+  `NAWA_MODELS_DIR`/`NAWA_FIXTURES_DIR`; examples use `NAWA_SOURCE_DIR`. Fixture
+  comparisons use the verifier's scaled error: `max_abs / max(1, max|expected|)`.
+
 ## Workflow rules
 
 - Every new feature comes with GoogleTest tests in `tests/`.
@@ -141,8 +172,8 @@ To add a test file, create `tests/test_<name>.cpp` and add it to `inference_test
 3. Tensor operations (elementwise, matmul, reductions) ✅
 4. Layers (Linear, ReLU, Sigmoid, Softmax) ✅
 5. Python training and weight export (PyTorch, MNIST) ✅
-6. **Model loading and runtime (file format, computational graph, executor)** ← *current step*
-7. End-to-end MNIST inference
+6. Model loading and runtime (file format, computational graph, executor) ✅
+7. **End-to-end MNIST inference** ← *current step*
 8. Benchmarking infrastructure
 9. Optimization (threads, SIMD, INT8 quantization)
 10. Extensions
