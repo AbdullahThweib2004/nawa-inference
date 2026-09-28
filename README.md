@@ -159,6 +159,7 @@ The file format is specified in [docs/model_format.md](docs/model_format.md).
 | `ENABLE_BENCHMARKS` | OFF     | Build `nawa_bench` (Google Benchmark)         |
 | `BUILD_EXAMPLES`    | ON      | Build the example programs in `examples/`     |
 | `ENABLE_SANITIZERS` | OFF     | ASan + UBSan in Debug builds (GCC/Clang only) |
+| `NAWA_NATIVE`       | OFF     | `-march=native`: faster (AVX2/FMA), but the binary only runs on CPUs like yours |
 
 ## Project layout
 

@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <exception>
 #include <filesystem>
+#include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <numeric>
@@ -42,9 +43,11 @@ void print_usage(std::ostream& os) {
     os << "Usage:\n"
           "  nawa info    <model.nawa>\n"
           "      Print the model's layers, shapes and parameter count.\n"
-          "  nawa eval    <model.nawa> --mnist <dir> [--batch N]\n"
+          "  nawa eval    <model.nawa> --mnist <dir> [--batch N] [--save-predictions FILE]\n"
           "      Evaluate on the MNIST test set (t10k-images-idx3-ubyte and\n"
           "      t10k-labels-idx1-ubyte in <dir>, e.g. data/MNIST/raw). Default batch: 256.\n"
+          "      --save-predictions writes 'index true predicted confidence' per image, so two\n"
+          "      builds can be compared with diff.\n"
           "  nawa predict <model.nawa> <image> [--no-preprocess] [--show]\n"
           "      Classify a digit image (PNG, JPEG, BMP, ...). --show prints the 28x28 input\n"
           "      as ASCII art; --no-preprocess only resizes to 28x28 (for comparison).\n";
@@ -141,7 +144,7 @@ struct Mistake {
 
 int cmd_eval(int argc, char** argv) {
     using Clock = std::chrono::steady_clock;
-    const Args args = parse_args(argc, argv, 2, {}, {"--mnist", "--batch"});
+    const Args args = parse_args(argc, argv, 2, {}, {"--mnist", "--batch", "--save-predictions"});
     if (args.positional.size() != 1) throw UsageError("eval takes exactly one model path");
     const auto dir = args.value("--mnist");
     if (!dir) throw UsageError("eval needs --mnist <dir>");
@@ -179,6 +182,8 @@ int cmd_eval(int argc, char** argv) {
               << " MNIST test images (batch " << batch_size << ")\n\n";
 
     std::array<std::array<std::size_t, kNumClasses>, kNumClasses> confusion{};
+    std::vector<Model::Prediction> all_predictions;
+    all_predictions.reserve(n);
     std::vector<Mistake> mistakes;
     std::size_t correct = 0;
 
@@ -190,6 +195,7 @@ int cmd_eval(int argc, char** argv) {
         for (std::size_t r = 0; r < rows; ++r) {
             const std::size_t truth = labels[start + r];
             const auto& p = predictions[r];
+            all_predictions.push_back(p);
             if (p.label >= kNumClasses) throw std::runtime_error("model predicted a class >= 10");
             ++confusion[truth][p.label];
             if (p.label == truth) {
@@ -200,6 +206,19 @@ int cmd_eval(int argc, char** argv) {
         }
     }
     const auto t_done = Clock::now();
+
+    if (const auto out_path = args.value("--save-predictions")) {
+        std::ofstream out(*out_path);
+        if (!out) throw std::runtime_error("cannot write " + *out_path);
+        // Full float precision (9 significant digits round-trips a float exactly), so even
+        // last-bit differences between two builds show up in a diff.
+        out << std::setprecision(9);
+        for (std::size_t i = 0; i < n; ++i) {
+            out << i << ' ' << int{labels[i]} << ' ' << all_predictions[i].label << ' '
+                << all_predictions[i].confidence << '\n';
+        }
+        std::cout << "Wrote " << n << " predictions to " << *out_path << "\n\n";
+    }
 
     std::cout << "Accuracy: " << percent(static_cast<double>(correct) / static_cast<double>(n))
               << "  (" << with_commas(correct) << " / " << with_commas(n) << " correct)\n\n";

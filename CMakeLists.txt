@@ -13,6 +13,7 @@ option(ENABLE_TESTS "Build the GoogleTest unit tests" ON)
 option(ENABLE_BENCHMARKS "Build the benchmarks" OFF)
 option(BUILD_EXAMPLES "Build the example programs" ON)
 option(ENABLE_SANITIZERS "Enable AddressSanitizer + UBSan in Debug builds (GCC/Clang)" OFF)
+option(NAWA_NATIVE "Optimize for this machine's CPU (-march=native); binaries may not run elsewhere" OFF)
 
 # ---------------------------------------------------------------------------
 # Global settings
@@ -31,6 +32,22 @@ set(CMAKE_CXX_EXTENSIONS OFF)  # use -std=c++20, not -std=gnu++20
 
 # Writes build/compile_commands.json so clangd / editors understand the flags.
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+# ---------------------------------------------------------------------------
+# NAWA_NATIVE: -march=native lets the compiler use every instruction set this CPU has
+# (AVX2, FMA, AVX-512 on the development machine) instead of baseline x86-64 (SSE2).
+# Off by default: the resulting binary may crash with "illegal instruction" on any CPU
+# that lacks one of those extensions (older or different CPUs, CI runners). Applied to all
+# targets, so the library, tests and benchmarks are compiled the same way.
+# ---------------------------------------------------------------------------
+if(NAWA_NATIVE)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        add_compile_options(-march=native)
+        message(STATUS "NAWA_NATIVE: compiling with -march=native")
+    else()
+        message(WARNING "NAWA_NATIVE is only implemented for GCC/Clang; ignoring.")
+    endif()
+endif()
 
 # ---------------------------------------------------------------------------
 # Warnings: an INTERFACE target carrying only flags. Linking it to our own

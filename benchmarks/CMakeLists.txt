@@ -38,6 +38,6 @@ string(TOUPPER "${CMAKE_BUILD_TYPE}" _build_type_upper)
 target_compile_definitions(nawa_bench PRIVATE
     NAWA_SOURCE_DIR="${PROJECT_SOURCE_DIR}"
     NAWA_BUILD_TYPE="${CMAKE_BUILD_TYPE}"
-    NAWA_CXX_FLAGS="${CMAKE_CXX_FLAGS} ${CMAKE_CXX_FLAGS_${_build_type_upper}}"
+    NAWA_CXX_FLAGS="${CMAKE_CXX_FLAGS} ${CMAKE_CXX_FLAGS_${_build_type_upper}}$<$<BOOL:${NAWA_NATIVE}>: -march=native>"
     NAWA_COMPILER="${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}"
 )
