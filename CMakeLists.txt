@@ -101,8 +101,10 @@ add_library(inference_core STATIC
     src/tensor/ops.cpp
     src/tensor/reference.cpp
     src/tensor/gemm.cpp
+    src/tensor/int8.cpp
     src/layers/linear.cpp
     src/layers/activations.cpp
+    src/layers/linear_int8.cpp
     src/model/binary_io.cpp
     src/model/tensor_io.cpp
     src/model/model.cpp
@@ -111,13 +113,24 @@ add_library(inference_core STATIC
     src/data/idx.cpp
     src/data/digit_preprocess.cpp
 )
+# INT8: the scalar reference (int8.cpp) and the AVX2 kernel (int8_avx2.cpp) must give
+# bit-identical results. Their integer sums are exact, but the float epilogue
+# (acc * scale + bias) could be fused into an FMA in one file and not the other: whether the
+# compiler "contracts" a*b+c is decided separately at each inlined copy, and with
+# -march=native (NAWA_NATIVE) FMA is available everywhere. -ffp-contract=off forbids that in
+# both files, so the rounding is the same in every build.
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    set_source_files_properties(src/tensor/int8.cpp PROPERTIES COMPILE_OPTIONS "-ffp-contract=off")
+endif()
 # The AVX2 + FMA GEMM kernel is compiled with -mavx2 -mfma in THIS FILE ONLY; the library
 # chooses it at runtime if the CPU supports it (src/tensor/gemm.cpp). The default build stays
 # portable to any x86-64 CPU, yet uses AVX2 where available.
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|amd64|i[3-6]86" AND
    CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-    target_sources(inference_core PRIVATE src/tensor/gemm_avx2.cpp)
+    target_sources(inference_core PRIVATE src/tensor/gemm_avx2.cpp src/tensor/int8_avx2.cpp)
     set_source_files_properties(src/tensor/gemm_avx2.cpp PROPERTIES COMPILE_OPTIONS "-mavx2;-mfma")
+    # The int8 kernel needs AVX2 only (no -mfma). -ffp-contract=off: see the int8 note below.
+    set_source_files_properties(src/tensor/int8_avx2.cpp PROPERTIES COMPILE_OPTIONS "-mavx2;-ffp-contract=off")
     target_compile_definitions(inference_core PRIVATE NAWA_HAVE_AVX2_KERNEL=1)
 else()
     target_compile_definitions(inference_core PRIVATE NAWA_HAVE_AVX2_KERNEL=0)

@@ -10,32 +10,45 @@ optimization is compared against `benchmarks/results/baseline.json` with
 | stage | change | result file |
 |---|---|---|
 | baseline | naive i-j-k matmul, `-O3`, SSE2 only | `baseline.json` |
-| 9.1 | i-k-j loop order in matmul (same flags) | `step9_1_loop_order.json` |
-| 9.2 | `-DNAWA_NATIVE=ON` (`-march=native`: AVX2, FMA) on top of 9.1 | `step9_2_native.json` |
+| 9.1 | i-k-j loop order in matmul | `step9_1_loop_order.json` |
+| 9.2 | optional `-march=native` build (numbers below: that build) | `step9_2_native.json` |
+| 9.3 | cache-blocked GEMM, AVX2 micro-kernel, runtime dispatch, pre-packed weights | `step9_3_blocked_gemm.json` |
+| 9.4 | allocation-free `predict`, fused Linear+ReLU, broadcast fast paths, aligned storage | `step9_4_memory_fusion.json` |
+| 9.5 | thread pool, parallel GEMM (default 4 threads) | `step9_5_threads.json` |
+| 9.6 | INT8 weights (`nawa quantize`) | `step9_6_int8.json` |
 
-Medians of 5 repetitions, pinned to one core, interleaved. Peak = 32 FLOP/cycle
-(see "Peak single-core FP32 throughput" below).
+Medians of 5 repetitions, interleaved. Single-thread numbers are pinned to one core
+(`taskset -c 2`). Peak = 32 FLOP/cycle per core (see "Peak single-core FP32 throughput"
+below). From 9.3 on, the default portable build is measured: it picks the AVX2 kernel at
+runtime.
 
-| benchmark | baseline | 9.1 | 9.2 |
-|---|---|---|---|
-| matmul 512³, FLOP/cycle (% of peak) | 0.51 (1.6%) | 3.77 (11.8%) | 5.80 (18.1%) |
-| matmul 1024³, FLOP/cycle (% of peak) | 0.24 (0.7%) | 3.38 (10.6%) | 4.44 (13.9%) |
-| MNIST layer 1 {256,784}×{784,128}, FLOP/cycle (% of peak) | 0.51 (1.6%) | 4.18 (13.1%) | 5.44 (17.0%)¹ |
-| MNIST layer 1, one image {1,784}×{784,128}, FLOP/cycle | 0.51 | 3.60 | 4.79 |
-| MNIST layer 2 {256,128}×{128,10}, FLOP/cycle | 0.65 | 1.73 | 1.91 |
-| `predict` batch 1, cycles per image | 407k | 60.0k (6.8×) | 58.2k (7.0×) |
-| `predict` batch 256, cycles per image | 407k | 56.0k (7.3×) | 50.3k (8.1×) |
-| `predict` batch-1 latency p50 / p99 (µs, wall) | 134 / 172 | 18.0 / 25.6 | 18.9 / 28.3² |
-| `predict` batch 256, images/s (wall) | 6,194 | 55,927 | 65,770 |
-| `nawa eval`, 10,000 images, accuracy | 97.15% | 97.15% (bit-identical to naive) | 97.15% (same 285 mistakes) |
+| | baseline | 9.1 | 9.2 | 9.3 | 9.4 | 9.5 | 9.6 float32 | 9.6 **INT8** |
+|---|---|---|---|---|---|---|---|---|
+| matmul 512³, FLOP/cycle (% of peak) | 0.51 (1.6%) | 3.77 (12%) | 5.80 (18%) | 26.5 (83%)¹ | 28.4 (89%)¹ | same kernel | same kernel | — |
+| MNIST layer 1 {256,784}×{784,128}, FLOP/cycle (% of peak) | 0.51 (1.6%) | 4.18 (13%) | 5.44 (17%) | 26.8 (84%)² | 27.6 (86%)² | same kernel | 27.4 (86%)² | 18.1 int ops/cycle |
+| batch-1 latency p50 / p99 (µs, wall, 1 thread) | 134 / 172 | 18.0 / 25.6 | 18.9 / 28.3 | 8.8 / 13.8 | 7.6 / 8.9 | 9.0 / 12.0³ | 7.4 / 11.7 | **4.5 / 9.4** |
+| batch 1, cycles per image | 407k | 60.0k | 58.2k | 25.8k | 25.2k | 25.2k | 25.4k | **15.7k** |
+| batch 256, images/s, 1 thread | 6,194 | 55,927 | 65,770 | 196,159 | 363,903 | 363,042 | 390,079 | 259,919 |
+| batch 256, images/s, 4 threads (default) | — | — | — | — | — | **624,554** | ≈ 390k (CLI) | ≈ 308k (CLI) |
+| heap allocations per `predict` | 65 | 65 | 65 | 65 | **0** | 0 | 0 | 0 |
+| model file | 407 KB | 407 KB | 407 KB | 407 KB | 407 KB | 407 KB | 407 KB | **103 KB** |
+| MNIST test accuracy (10,000 images) | 97.15% | 97.15% | 97.15% | 97.15% | 97.15% | 97.15% | 97.15% | 97.14% |
 
-¹ This benchmark varies more from run to run in the native build: separate runs gave 5.9M,
-8.3M (three times) and 9.5M cycles (5.44 FLOP/cycle is from the recorded 9.5M). Fast, memory-heavy
-kernels are more sensitive to where their buffers sit in memory than the old latency-bound
-loop. Compare stages with several runs, not one.
+¹ `matmul()`, which packs B on every call. With B pre-packed, 512³ reaches 28.1 (88%) in 9.3.
 
-² Wall-clock latency depends on the clock at the time of the run. In cycles, batch 1
-improved 1.03× from 9.1 to 9.2.
+² B pre-packed, as in `Linear`.
+
+³ Wall-clock latency varies with the clock and the thermal state of the laptop. The cycles
+per image (25.2k) are the same as in 9.4, because batch 1 stays single-threaded by design.
+
+**Overall, baseline → final (float32):**
+- batch 256: **63× more images/s** on one thread (6,194 → 390,079), **101×** with 4 threads
+  (→ 624,554);
+- batch-1 latency: **18×** lower (134 → 7.4 µs), and **30×** with INT8 (→ 4.5 µs);
+- matmul: from 1.6% to about 88% of the core's FP32 peak;
+- accuracy unchanged.
+
+The 9.2 footnotes below describe the native build.
 
 ### What each stage did
 
@@ -228,6 +241,57 @@ in 9.4 and 9.5 (25.2k), and the wall differences are noise.
 
 On a desktop CPU or a server with a bigger power budget, the same code should scale much
 closer to the core count.
+
+### 9.6: INT8 quantization
+
+- **Weights:** symmetric per-output-channel int8 (`scale_w[j] = max|W[:,j]| / 127`), stored
+  `{out, in}` so each dot product reads contiguous bytes. `nawa quantize` writes format
+  version 2 (layer type 5, `docs/model_format.md`). Version-1 files are still read, and float32
+  models are still written as version 1.
+- **Activations:** quantized per row at runtime (`max|x| / 127`), into a per-thread
+  scratch buffer, so `predict` still makes no allocations. The int32 sums are exact, and the
+  bias, ReLU and Softmax stay float32.
+- **Kernels:** a scalar reference, and an AVX2 kernel chosen at runtime (`vpmovsxbw`
+  widens the weights, `vpmaddwd` does the multiply-adds, 4 rows × 2 channels are register-
+  blocked). **Bit-identical to the scalar reference** for every shape and thread count
+  (tested), including in the `-march=native` build. Both INT8 files are compiled with
+  `-ffp-contract=off`, because otherwise the float epilogue could be fused into an FMA in
+  one file and not the other.
+- **Two performance fixes found by measuring:**
+  - Register blocking (reusing each widened weight vector for 4 rows): 4.55M → 3.84M
+    cycles at batch 256.
+  - Replacing `std::nearbyint`, which the portable build compiled into a **libm call per
+    activation value** (no SSE4.1 `roundss` in baseline x86-64), with an inline
+    round-to-nearest-even (add and subtract 1.5·2²³): 3.84M → 2.84M cycles. The results are
+    identical (the committed INT8 file is still byte-identical).
+
+| | float32 | INT8 |
+|---|---|---|
+| model file | 407,206 B | **102,838 B (3.96× smaller)** |
+| weights in memory | 409,600 B (packed) | **102,184 B** |
+| MNIST test accuracy (10,000) | 97.15% | 97.14% |
+| predictions that changed | — | **5 of 10,000** (3 right→wrong, 2 wrong→right) |
+| max probability difference | — | 0.050 (10,000 images), 0.0099 (100 fixtures) |
+| GEMM 1×784×128, cycles | 15.4k | **13.2k** |
+| GEMM 256×784×128, cycles | **1.87M** | 2.84M |
+| `predict` batch 1: p50 / p99 latency | 7.4 / 11.7 µs | **4.5 / 9.4 µs** |
+| `predict` batch 256, 1 thread | **390k images/s** | 260k images/s |
+| `nawa eval`, 4 threads | **≈ 390k images/s** | ≈ 308k images/s |
+
+**Where INT8 wins on this CPU, and where it doesn't:**
+- **Batch 1 wins (1.6× faster).** A single image streams all the weights once and does
+  little arithmetic per byte, so time is set by moving weights through the caches. INT8
+  weights are 4× smaller (100 KB instead of 401 KB).
+- **Batch 256 loses (1.5× slower).** With many rows, each weight is reused many times and
+  arithmetic dominates. The float kernel gets 2 FMA units × 8 = 16 multiply-adds per cycle.
+  With AVX2 only, int8 needs three instructions (widen, `vpmaddwd`, add) per 16
+  multiply-adds, and the widening runs on one execution port, so it can't beat a tuned
+  float32 kernel.
+- **The fix is AVX-512 VNNI.** This CPU has it: `vpdpbusd` multiplies 8-bit values and
+  accumulates into int32 in *one* instruction. A VNNI kernel is the next step; it was
+  outside this stage's "AVX2 kernel" scope.
+- **Where INT8 always wins: size.** 4× smaller files and weights in memory, at a cost of
+  0.01% accuracy on MNIST.
 
 ### Known regression in 9.2: broadcasting got slower
 

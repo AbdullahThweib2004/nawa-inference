@@ -19,7 +19,9 @@ import numpy as np
 
 MODEL_MAGIC = b"NAWA"
 TENSOR_MAGIC = b"NTSR"
-MODEL_VERSION = 1
+MODEL_VERSION = 1          # float32 models (layer types 1-4)
+MODEL_VERSION_INT8 = 2     # adds layer type 5 (LinearInt8)
+SUPPORTED_MODEL_VERSIONS = (MODEL_VERSION, MODEL_VERSION_INT8)
 TENSOR_VERSION = 1
 MAX_NDIM = 8
 
@@ -27,6 +29,8 @@ LAYER_LINEAR = 1
 LAYER_RELU = 2
 LAYER_SIGMOID = 3
 LAYER_SOFTMAX = 4
+LAYER_LINEAR_INT8 = 5
+INT8_MAX_IN_FEATURES = 2147483647 // (127 * 127)  # int32 accumulation must not overflow
 
 # "<" = little-endian, no padding. These match the type table in the spec.
 _U8 = struct.Struct("<B")
@@ -62,6 +66,15 @@ class Linear:
 
 
 @dataclass
+class LinearInt8:
+    """Per-output-channel symmetric int8 weights (format version 2)."""
+
+    weight: np.ndarray  # int8 {out_features, in_features}, values in -127..127
+    scales: np.ndarray  # float32 {out_features}, > 0: weight[j, k] * scales[j] ~ original
+    bias: np.ndarray | None = None  # float32 {out_features}
+
+
+@dataclass
 class ReLU:
     pass
 
@@ -76,7 +89,7 @@ class Softmax:
     axis: int = -1
 
 
-Layer = Union[Linear, ReLU, Sigmoid, Softmax]
+Layer = Union[Linear, LinearInt8, ReLU, Sigmoid, Softmax]
 
 
 @dataclass
@@ -226,6 +239,22 @@ def _validate_linear(weight: np.ndarray, bias: np.ndarray | None, index: int) ->
         )
 
 
+def _validate_linear_int8(layer: LinearInt8, index: int) -> None:
+    w, scales = layer.weight, layer.scales
+    if w.ndim != 2 or w.dtype != np.int8:
+        raise NawaFormatError(f"layer {index} (LinearInt8): weight must be a 2-D int8 array")
+    out_features, in_features = w.shape
+    if not 1 <= in_features <= INT8_MAX_IN_FEATURES or out_features < 1:
+        raise NawaFormatError(f"layer {index} (LinearInt8): bad shape {list(w.shape)}")
+    if (w == -128).any():
+        raise NawaFormatError(f"layer {index} (LinearInt8): weights must be in -127..127")
+    if scales.shape != (out_features,) or not (np.isfinite(scales).all() and (scales > 0).all()):
+        raise NawaFormatError(f"layer {index} (LinearInt8): need {out_features} finite scales > 0")
+    if layer.bias is not None and layer.bias.shape != (out_features,):
+        raise NawaFormatError(f"layer {index} (LinearInt8): bias shape {list(layer.bias.shape)} "
+                              f"does not match out_features {out_features}")
+
+
 def encode_model(model: Model) -> bytes:
     shape = tuple(int(d) for d in model.input_shape)
     if len(shape) < 1:
@@ -236,7 +265,9 @@ def encode_model(model: Model) -> bytes:
     if not model.layers:
         raise NawaFormatError("a model needs at least one layer")
 
-    parts = [MODEL_MAGIC, _U32.pack(MODEL_VERSION), _U32.pack(len(shape))]
+    # Version 2 only when needed, so float32 models stay byte-identical to version 1 files.
+    version = MODEL_VERSION_INT8 if any(isinstance(l, LinearInt8) for l in model.layers) else MODEL_VERSION
+    parts = [MODEL_MAGIC, _U32.pack(version), _U32.pack(len(shape))]
     parts += [_U64.pack(d) for d in shape]
     parts.append(_F32.pack(norm.pixel_scale))
     parts.append(_U32.pack(len(norm.mean)))
@@ -251,6 +282,18 @@ def encode_model(model: Model) -> bytes:
             _validate_linear(weight, bias, i)
             parts += [_U32.pack(LAYER_LINEAR), _U8.pack(0 if bias is None else 1)]
             parts.append(encode_tensor_block(weight))
+            if bias is not None:
+                parts.append(encode_tensor_block(bias))
+        elif isinstance(layer, LinearInt8):
+            weight = np.asarray(layer.weight)
+            scales = np.asarray(layer.scales, dtype=np.float32)
+            bias = None if layer.bias is None else np.asarray(layer.bias, dtype=np.float32)
+            _validate_linear_int8(LinearInt8(weight, scales, bias), i)
+            out_features, in_features = weight.shape
+            parts += [_U32.pack(LAYER_LINEAR_INT8), _U8.pack(0 if bias is None else 1),
+                      _U32.pack(in_features), _U32.pack(out_features),
+                      np.ascontiguousarray(scales, dtype=_F32_DTYPE).tobytes(),
+                      np.ascontiguousarray(weight, dtype=np.int8).tobytes()]
             if bias is not None:
                 parts.append(encode_tensor_block(bias))
         elif isinstance(layer, ReLU):
@@ -270,7 +313,7 @@ def decode_model(data: bytes) -> Model:
     if magic != MODEL_MAGIC:
         raise NawaFormatError(f"bad magic {magic!r}, expected {MODEL_MAGIC!r}")
     version = r.u32("version")
-    if version != MODEL_VERSION:
+    if version not in SUPPORTED_MODEL_VERSIONS:
         raise NawaFormatError(f"unsupported model format version {version}")
 
     input_ndim = r.u32("input_ndim")
@@ -306,6 +349,24 @@ def decode_model(data: bytes) -> Model:
             bias = _read_tensor_block(r, f"layer {i} bias") if has_bias else None
             _validate_linear(weight, bias, i)
             layers.append(Linear(weight, bias))
+        elif type_id == LAYER_LINEAR_INT8:
+            if version < MODEL_VERSION_INT8:
+                raise NawaFormatError(f"layer {i}: layer type 5 (LinearInt8) requires format "
+                                      f"version 2, found it in a version {version} file")
+            has_bias = r.u8(f"layer {i} has_bias")
+            if has_bias not in (0, 1):
+                raise NawaFormatError(f"layer {i} (LinearInt8): has_bias must be 0 or 1, got {has_bias}")
+            in_features = r.u32(f"layer {i} in_features")
+            out_features = r.u32(f"layer {i} out_features")
+            if not 1 <= in_features <= INT8_MAX_IN_FEATURES or out_features < 1:
+                raise NawaFormatError(f"layer {i} (LinearInt8): bad shape {out_features} x {in_features}")
+            scales = np.frombuffer(r.take(4 * out_features, f"layer {i} scales"), dtype=_F32_DTYPE)
+            weight = np.frombuffer(r.take(in_features * out_features, f"layer {i} int8 weights"),
+                                   dtype=np.int8).reshape(out_features, in_features)
+            bias = _read_tensor_block(r, f"layer {i} bias") if has_bias else None
+            layer = LinearInt8(weight.copy(), scales.astype(np.float32), bias)
+            _validate_linear_int8(layer, i)
+            layers.append(layer)
         elif type_id == LAYER_RELU:
             layers.append(ReLU())
         elif type_id == LAYER_SIGMOID:

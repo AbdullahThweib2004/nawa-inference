@@ -41,4 +41,18 @@ protected:
     Layer() = default;
 };
 
+// A fully connected layer, float32 (Linear) or int8 (LinearInt8). The model treats both the
+// same way: it checks that in/out sizes chain together, and runs them through forward_into,
+// optionally with a following ReLU fused into the output pass.
+class DenseLayer : public Layer {
+public:
+    virtual std::size_t in_features() const noexcept = 0;
+    virtual std::size_t out_features() const noexcept = 0;
+
+    // output {rows, out_features} = layer(input {rows, in_features}), raw buffers, no shape
+    // checks (the caller guarantees them). fuse_relu applies a following ReLU in the same pass.
+    virtual void forward_into(const float* input, std::size_t rows, float* output,
+                              bool fuse_relu = false) const = 0;
+};
+
 }  // namespace inference

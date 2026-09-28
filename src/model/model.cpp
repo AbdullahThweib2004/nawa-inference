@@ -2,13 +2,16 @@
 
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <optional>
+#include <span>
 #include <sstream>
 #include <stdexcept>
 #include <utility>
 
 #include "inference/layers/activations.hpp"
 #include "inference/layers/linear.hpp"
+#include "inference/layers/linear_int8.hpp"
 #include "inference/model/binary_io.hpp"
 #include "inference/model/tensor_io.hpp"
 #include "inference/tensor/ops.hpp"
@@ -18,7 +21,10 @@ namespace inference {
 namespace {
 
 constexpr std::string_view kModelMagic = "NAWA";
-constexpr std::uint32_t kModelVersion = 1;
+// Version 1: layer types 1-4. Version 2 adds type 5 (LinearInt8). Readers accept both;
+// save() writes version 1 unless the model contains an int8 layer.
+constexpr std::uint32_t kModelVersionFloat = 1;
+constexpr std::uint32_t kModelVersionInt8 = 2;
 constexpr std::uint32_t kMaxInputNdim = 8;
 
 // Layer type ids (docs/model_format.md, "Layers").
@@ -26,6 +32,7 @@ constexpr std::uint32_t kLayerLinear = 1;
 constexpr std::uint32_t kLayerReLU = 2;
 constexpr std::uint32_t kLayerSigmoid = 3;
 constexpr std::uint32_t kLayerSoftmax = 4;
+constexpr std::uint32_t kLayerLinearInt8 = 5;
 
 bool is_finite_positive(float x) { return std::isfinite(x) && x > 0.0f; }
 
@@ -83,7 +90,7 @@ Model::Metadata read_metadata(BinaryReader& r) {
 // concrete Layer. The caller only ever sees std::unique_ptr<Layer>; this switch is the one
 // place that knows about every layer type. Supporting a new layer means adding a type id
 // to the spec and one case here.
-std::unique_ptr<Layer> read_layer(BinaryReader& r, std::size_t index) {
+std::unique_ptr<Layer> read_layer(BinaryReader& r, std::size_t index, std::uint32_t version) {
     const std::string name = "layer " + std::to_string(index);
     const std::size_t type_offset = r.offset();
     const std::uint32_t type_id = r.read_u32(name + " type id");
@@ -124,10 +131,67 @@ std::unique_ptr<Layer> read_layer(BinaryReader& r, std::size_t index) {
             return std::make_unique<Sigmoid>();
         case kLayerSoftmax:
             return std::make_unique<Softmax>(r.read_i32(name + " axis"));
+        case kLayerLinearInt8: {
+            if (version < kModelVersionInt8) {
+                r.fail(type_offset, name +
+                                        ": layer type 5 (LinearInt8) requires format version 2, "
+                                        "found it in a version " +
+                                        std::to_string(version) + " file");
+            }
+            const std::size_t bias_flag_offset = r.offset();
+            const std::uint8_t has_bias = r.read_u8(name + " has_bias");
+            if (has_bias > 1) {
+                r.fail(bias_flag_offset, name + " (LinearInt8): expected has_bias 0 or 1, found " +
+                                             std::to_string(has_bias));
+            }
+            const std::size_t dims_offset = r.offset();
+            const std::uint32_t in = r.read_u32(name + " in_features");
+            const std::uint32_t out = r.read_u32(name + " out_features");
+            // in >= 1, out >= 1, and in * 127 * 127 must fit in int32 (exact accumulation).
+            if (in == 0 || out == 0 || in > 2147483647u / (127u * 127u)) {
+                r.fail(dims_offset, name +
+                                        " (LinearInt8): expected 1 <= in_features <= 133144 and "
+                                        "out_features >= 1, found " +
+                                        std::to_string(in) + " x " + std::to_string(out));
+            }
+            const std::size_t scales_offset = r.offset();
+            const std::vector<float> scales = r.read_f32_array(out, name + " scales");
+            for (std::size_t j = 0; j < scales.size(); ++j) {
+                if (!is_finite_positive(scales[j])) {
+                    r.fail(scales_offset + 4 * j,
+                           name + " (LinearInt8): expected scale[" + std::to_string(j) +
+                               "] finite and > 0, found " + std::to_string(scales[j]));
+                }
+            }
+            const std::size_t weights_offset = r.offset();
+            const std::size_t count = static_cast<std::size_t>(in) * out;
+            const std::span<const std::byte> raw = r.read_bytes(count, name + " int8 weights");
+            std::vector<std::int8_t> q(count);
+            std::memcpy(q.data(), raw.data(), count);
+            for (std::size_t i = 0; i < count; ++i) {
+                if (q[i] == -128) {
+                    r.fail(weights_offset + i, name +
+                                                   " (LinearInt8): expected weights in "
+                                                   "-127..127 (symmetric), found -128");
+                }
+            }
+            std::optional<Tensor> bias;
+            if (has_bias == 1) {
+                const std::size_t bias_offset = r.offset();
+                bias = read_tensor_block(r, name + " bias");
+                if (bias->shape() != Shape{out}) {
+                    r.fail(bias_offset, name + " (LinearInt8): expected bias shape " +
+                                            shape_to_string({out}) + ", found " +
+                                            shape_to_string(bias->shape()));
+                }
+            }
+            return std::make_unique<LinearInt8>(
+                QuantizedMatrix::from_quantized(q.data(), scales.data(), in, out), std::move(bias));
+        }
         default:
             r.fail(type_offset, name +
-                                    ": expected a layer type id 1-4 "
-                                    "(Linear, ReLU, Sigmoid, Softmax), found " +
+                                    ": expected a layer type id 1-5 "
+                                    "(Linear, ReLU, Sigmoid, Softmax, LinearInt8), found " +
                                     std::to_string(type_id));
     }
 }
@@ -154,9 +218,9 @@ Model Model::load(const std::string& path) {
     r.expect_magic(kModelMagic);
     const std::size_t version_offset = r.offset();
     const std::uint32_t version = r.read_u32("version");
-    if (version != kModelVersion) {
-        r.fail(version_offset, "expected model format version " + std::to_string(kModelVersion) +
-                                   ", found " + std::to_string(version));
+    if (version != kModelVersionFloat && version != kModelVersionInt8) {
+        r.fail(version_offset,
+               "expected model format version 1 or 2, found " + std::to_string(version));
     }
 
     Model model;
@@ -174,9 +238,9 @@ Model Model::load(const std::string& path) {
     std::size_t features = model.input_features_;
     for (std::uint32_t i = 0; i < num_layers; ++i) {
         const std::size_t layer_offset = r.offset();
-        std::unique_ptr<Layer> layer = read_layer(r, i);
+        std::unique_ptr<Layer> layer = read_layer(r, i, version);
 
-        if (const auto* linear = dynamic_cast<const Linear*>(layer.get())) {
+        if (const auto* linear = dynamic_cast<const DenseLayer*>(layer.get())) {
             if (linear->in_features() != features) {
                 r.fail(layer_offset,
                        "layer " + std::to_string(i) + " (" + linear->name() +
@@ -242,7 +306,7 @@ void Model::build_plan() {
         const Layer* layer = layers_[i].get();
         const bool next_is_relu =
             i + 1 < layers_.size() && dynamic_cast<const ReLU*>(layers_[i + 1].get()) != nullptr;
-        if (dynamic_cast<const Linear*>(layer) && next_is_relu) {
+        if (dynamic_cast<const DenseLayer*>(layer) && next_is_relu) {
             plan_.push_back({layer, true});
             ++i;  // the ReLU is part of this step
         } else {
@@ -281,7 +345,7 @@ const Tensor& Model::predict(const Tensor& raw, Workspace& workspace) const {
     preprocess_into(raw.data(), rows * input_features_, current->data());
 
     for (const Step& step : plan_) {
-        if (const auto* linear = dynamic_cast<const Linear*>(step.layer)) {
+        if (const auto* linear = dynamic_cast<const DenseLayer*>(step.layer)) {
             other->resize(rows, linear->out_features());
             linear->forward_into(current->data(), rows, other->data(), step.fuse_relu);
             std::swap(current, other);
@@ -347,7 +411,7 @@ std::size_t Model::num_parameters() const {
 
 std::string Model::summary() const {
     std::ostringstream os;
-    os << "Model: " << path_ << " (format v" << kModelVersion << ")\n";
+    os << "Model: " << path_ << " (format v" << format_version() << ")\n";
     os << "Input: " << shape_to_string(metadata_.input_shape) << " per sample, normalized as"
        << " (x * " << metadata_.pixel_scale << " - " << metadata_.mean[0] << ") / "
        << metadata_.stddev[0] << '\n';
@@ -357,13 +421,13 @@ std::string Model::summary() const {
     for (std::size_t i = 0; i < layers_.size(); ++i) {
         const Layer& layer = *layers_[i];
         const std::size_t in = features;
-        if (const auto* linear = dynamic_cast<const Linear*>(&layer)) {
+        if (const auto* linear = dynamic_cast<const DenseLayer*>(&layer)) {
             features = linear->out_features();
         }
         std::string shapes =
             "[N, " + std::to_string(in) + "] -> [N, " + std::to_string(features) + "]";
         os << "  " << i << "  " << layer.name();
-        os << std::string(layer.name().size() < 20 ? 20 - layer.name().size() : 1, ' ');
+        os << std::string(layer.name().size() < 24 ? 24 - layer.name().size() : 1, ' ');
         os << shapes;
         if (layer.num_parameters() > 0) {
             os << std::string(shapes.size() < 24 ? 24 - shapes.size() : 1, ' ')
@@ -379,6 +443,87 @@ std::string Model::summary() const {
     os << '\n';
     os << "Total parameters: " << with_commas(num_parameters());
     return os.str();
+}
+
+// ---------------------------------------------------------------------------
+// Saving and quantization
+// ---------------------------------------------------------------------------
+
+std::uint32_t Model::format_version() const {
+    for (const auto& layer : layers_) {
+        if (dynamic_cast<const LinearInt8*>(layer.get())) return kModelVersionInt8;
+    }
+    return kModelVersionFloat;
+}
+
+void Model::save(const std::string& path) const {
+    BinaryWriter w;
+    w.write_bytes(std::as_bytes(std::span(kModelMagic)));
+    w.write_u32(format_version());
+
+    w.write_u32(static_cast<std::uint32_t>(metadata_.input_shape.size()));
+    for (std::size_t d : metadata_.input_shape) w.write_u64(d);
+    w.write_f32(metadata_.pixel_scale);
+    w.write_u32(static_cast<std::uint32_t>(metadata_.mean.size()));
+    for (float m : metadata_.mean) w.write_f32(m);
+    for (float sd : metadata_.stddev) w.write_f32(sd);
+
+    w.write_u32(static_cast<std::uint32_t>(layers_.size()));
+    for (const auto& layer : layers_) {
+        if (const auto* linear = dynamic_cast<const Linear*>(layer.get())) {
+            w.write_u32(kLayerLinear);
+            w.write_u8(linear->bias() ? 1 : 0);
+            write_tensor_block(w, linear->weight());
+            if (linear->bias()) write_tensor_block(w, *linear->bias());
+        } else if (const auto* q = dynamic_cast<const LinearInt8*>(layer.get())) {
+            const QuantizedMatrix& m = q->weight();
+            w.write_u32(kLayerLinearInt8);
+            w.write_u8(q->bias() ? 1 : 0);
+            w.write_u32(static_cast<std::uint32_t>(m.in_features()));
+            w.write_u32(static_cast<std::uint32_t>(m.out_features()));
+            w.write_f32_array({m.scales(), m.out_features()});
+            // {out_features, in_features}: the unpadded part of each channel's row.
+            for (std::size_t j = 0; j < m.out_features(); ++j) {
+                w.write_bytes(
+                    std::as_bytes(std::span(m.data() + j * m.padded_in(), m.in_features())));
+            }
+            if (q->bias()) write_tensor_block(w, *q->bias());
+        } else if (dynamic_cast<const ReLU*>(layer.get())) {
+            w.write_u32(kLayerReLU);
+        } else if (dynamic_cast<const Sigmoid*>(layer.get())) {
+            w.write_u32(kLayerSigmoid);
+        } else if (const auto* softmax = dynamic_cast<const Softmax*>(layer.get())) {
+            w.write_u32(kLayerSoftmax);
+            w.write_i32(static_cast<std::int32_t>(softmax->axis()));
+        } else {
+            throw std::logic_error("Model::save: layer '" + layer->name() + "' has no file format");
+        }
+    }
+    write_file_bytes(path, w.bytes());
+}
+
+Model Model::quantize() const {
+    Model q;
+    q.path_ = path_ + " (int8)";
+    q.metadata_ = metadata_;
+    q.input_features_ = input_features_;
+    for (const auto& layer : layers_) {
+        if (const auto* linear = dynamic_cast<const Linear*>(layer.get())) {
+            q.layers_.push_back(std::make_unique<LinearInt8>(LinearInt8::from_linear(*linear)));
+        } else if (const auto* already = dynamic_cast<const LinearInt8*>(layer.get())) {
+            q.layers_.push_back(std::make_unique<LinearInt8>(already->weight(), already->bias()));
+        } else if (dynamic_cast<const ReLU*>(layer.get())) {
+            q.layers_.push_back(std::make_unique<ReLU>());
+        } else if (dynamic_cast<const Sigmoid*>(layer.get())) {
+            q.layers_.push_back(std::make_unique<Sigmoid>());
+        } else if (const auto* softmax = dynamic_cast<const Softmax*>(layer.get())) {
+            q.layers_.push_back(std::make_unique<Softmax>(softmax->axis()));
+        } else {
+            throw std::logic_error("Model::quantize: unsupported layer '" + layer->name() + "'");
+        }
+    }
+    q.build_plan();
+    return q;
 }
 
 }  // namespace inference

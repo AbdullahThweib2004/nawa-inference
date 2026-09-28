@@ -33,9 +33,9 @@ A lightweight neural network inference engine in C++, written from scratch. It i
   (`compute_strides`) and stored. The element at `{i0, i1, ...}` is at offset
   `sum(ik * strides[k])`.
 - A dimension of size 0 is rejected.
-- Storage is a private `std::vector<float>`, reached only through the class API (`data()`,
-  `at()`, ...). It will be swapped for 64-byte-aligned memory in the optimization step, so
-  nothing outside `Tensor` may depend on it being a `std::vector`.
+- Storage is a private 64-byte-aligned `AlignedBuffer` (since stage 9.4), reached only through
+  the class API (`data()`, `at()`, `resize()`, ...). Nothing outside `Tensor` may depend on
+  how it is stored.
 - Errors: `std::invalid_argument` for bad shapes or data sizes, and `std::out_of_range` for
   bad indices or dimensions. Messages include the shapes/indices involved.
 - `allclose(a, b, rtol, atol)` is the comparison to use in tests (numpy rule; different
@@ -208,6 +208,31 @@ A lightweight neural network inference engine in C++, written from scratch. It i
 - Multithreaded benchmarks use wall time (`UseRealTime`). `LoopMeter` cycles only count the
   calling thread.
 
+## INT8 (stage 9.6)
+
+- `include/inference/tensor/int8.hpp`: `QuantizedMatrix` (per-output-channel symmetric int8,
+  stored `{out, K_pad}`, K_pad a multiple of 16), `quantize_row` (per-row activations, values
+  -127..127 stored as int16), and `gemm_int8` (exact int32 sums, then
+  `float(acc) * (scale_a * scale_w[j])` + bias + ReLU).
+- Kernels: `int8_rows_scalar` (the reference) and `int8_rows_avx2` (`vpmovsxbw` +
+  `vpmaddwd`, 4 rows × 2 channels register-blocked), chosen like the float kernels
+  (`NAWA_KERNEL`, `GemmKernel`), and threaded like `gemm()`.
+- **Invariant: the scalar and AVX2 INT8 kernels are bit-identical** in every build and for
+  any thread count (`tests/test_int8.cpp`). That's why `int8.cpp` and `int8_avx2.cpp` are
+  compiled with `-ffp-contract=off` (no FMA contraction of the float epilogue) and why both
+  use the shared `finish_int8` and `quantize_row`.
+- Rounding uses `round_nearest_even` (add/subtract 1.5·2²³), not `std::nearbyint`, which
+  was a libm call per value in the portable build.
+- `LinearInt8` (a `DenseLayer`, like `Linear`) is fused with ReLU in the plan.
+  `Model::quantize()` converts every Linear layer; `Model::save()` writes version 1 for
+  float32 and version 2 if any LinearInt8 is present. A loaded float32 model saves
+  byte-identical to its file (tested).
+- `models/mnist_mlp_int8.nawa` is committed. A test checks that quantizing
+  `mnist_mlp.nawa` reproduces it byte for byte, so **regenerate it (`nawa quantize`) if the
+  quantization code changes on purpose.**
+- Next INT8 step if needed: an AVX-512 VNNI kernel (`vpdpbusd`). Without VNNI, int8 is slower
+  than the float32 GEMM at large batch on this CPU.
+
 ## Build option `NAWA_NATIVE` (default OFF)
 
 - `-DNAWA_NATIVE=ON` adds `-march=native` to every target. The compiler then targets
@@ -317,8 +342,7 @@ To add a test file, create `tests/test_<name>.cpp` and add it to `inference_test
      epilogue, broadcast fast paths, 64-byte-aligned storage)
    - 9.5 multithreading ✅ (ThreadPool, parallel GEMM, bit-identical for any thread count,
      TSan CI job; scaling limited by the laptop's power budget, see docs/performance.md)
-   - **9.6 INT8 quantization** ← *current stage*: per-output-channel int8 weights, dynamic
-     per-row activation quantization, int32 accumulation; scalar reference + AVX2 kernel
-     (runtime dispatch, differential tests); `Model::quantize()`, `nawa quantize`, layer
-     type 5 (LinearInt8), format version 2 (readers still accept 1); Python reader + tests
+   - 9.6 INT8 quantization ✅ (`nawa quantize`, format v2; 4x smaller, 97.14% vs 97.15%;
+     faster at batch 1, slower at batch 256 without VNNI, see docs/performance.md)
+   - **Wrap-up** ← *current*: full progress table, README "Performance", step 9 done
 10. Extensions

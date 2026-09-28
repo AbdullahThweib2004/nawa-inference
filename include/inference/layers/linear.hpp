@@ -16,7 +16,7 @@ namespace inference {
 // PyTorch's nn.Linear, which stores {out_features, in_features} and computes x · Wᵀ + b.
 // Storing {in, out} lets forward() be a plain matmul with no transpose. The Python
 // exporter (step 5) transposes PyTorch weights before saving them.
-class Linear : public Layer {
+class Linear : public DenseLayer {
 public:
     // weight: {in_features, out_features}. bias (optional): {out_features}.
     // Throws std::invalid_argument if weight is not 2-D or the bias shape doesn't match.
@@ -31,13 +31,13 @@ public:
     // them). With fuse_relu, a following ReLU is applied in the same pass, while each
     // output is still in a register (the GEMM epilogue).
     void forward_into(const float* input, std::size_t rows, float* output,
-                      bool fuse_relu = false) const;
+                      bool fuse_relu = false) const override;
 
     std::string name() const override;
     std::size_t num_parameters() const override;
 
-    std::size_t in_features() const noexcept { return weight_.shape()[0]; }
-    std::size_t out_features() const noexcept { return weight_.shape()[1]; }
+    std::size_t in_features() const noexcept override { return weight_.shape()[0]; }
+    std::size_t out_features() const noexcept override { return weight_.shape()[1]; }
     const Tensor& weight() const noexcept { return weight_; }
     const std::optional<Tensor>& bias() const noexcept { return bias_; }
 

@@ -71,7 +71,7 @@ The file ends exactly after the tensor block.
 | Offset   | Type                     | Field         | Value / constraint                               |
 |----------|--------------------------|---------------|--------------------------------------------------|
 | 0        | 4 bytes                  | `magic`       | `NAWA`                                           |
-| 4        | `u32`                    | `version`     | 1                                                |
+| 4        | `u32`                    | `version`     | 1 or 2 (2 only if a LinearInt8 layer is present) |
 | 8        | `u32`                    | `input_ndim`  | 1 ≤ input_ndim ≤ 8                               |
 | 12       | `u64` × input_ndim       | `input_dims`  | shape of ONE sample, without the batch dimension; every dim ≥ 1 |
 | …        | `f32`                    | `pixel_scale` | finite and > 0                                   |
@@ -101,14 +101,15 @@ The MNIST model stores `input_dims = {784}` (a flattened 28×28 image),
 
 Each layer is a `u32` type id followed by that layer's payload:
 
-| Type id | Layer   | Payload                                   |
-|---------|---------|-------------------------------------------|
-| 1       | Linear  | see below                                 |
-| 2       | ReLU    | none                                      |
-| 3       | Sigmoid | none                                      |
-| 4       | Softmax | `i32 axis` (negative counts from the end) |
+| Type id | Layer      | Payload                                   | Version |
+|---------|------------|-------------------------------------------|---------|
+| 1       | Linear     | see below                                 | 1, 2    |
+| 2       | ReLU       | none                                      | 1, 2    |
+| 3       | Sigmoid    | none                                      | 1, 2    |
+| 4       | Softmax    | `i32 axis` (negative counts from the end) | 1, 2    |
+| 5       | LinearInt8 | see below                                 | 2 only  |
 
-Any other type id is an error.
+Any other type id is an error, and so is type 5 in a version 1 file.
 
 **Linear payload:**
 
@@ -121,6 +122,26 @@ Any other type id is an error.
 > **The weight is the transpose of PyTorch's `nn.Linear.weight`**, which has shape
 > `{out_features, in_features}`. The exporter writes `weight.T`, so the engine computes
 > `y = x · W + b` with a plain matmul.
+
+**LinearInt8 payload** (version 2): a fully connected layer with symmetric, per-output-channel
+int8 weights, as produced by `nawa quantize`:
+
+| Type                   | Field          | Constraint                                        |
+|------------------------|----------------|---------------------------------------------------|
+| `u8`                   | `has_bias`     | 0 or 1                                            |
+| `u32`                  | `in_features`  | 1 ≤ in_features ≤ 133144 (so in·127² fits in int32) |
+| `u32`                  | `out_features` | ≥ 1                                               |
+| `f32` × out_features   | `scales`       | finite and > 0                                    |
+| `i8` × (out·in)        | `weights`      | shape `{out_features, in_features}`, row-major; values in −127..127 (−128 is invalid) |
+| tensor block           | `bias`         | only if `has_bias` = 1; float32, shape `{out_features}` |
+
+The float value of weight `(k, j)` (input k, output j) is `weights[j][k] * scales[j]`.
+
+> **The int8 weights are stored `{out, in}`, the opposite of the float Linear layer's
+> `{in, out}`.** Each output channel's weights are contiguous, which is the order an int8 dot
+> product reads them in. At runtime each input row is quantized symmetrically with its own
+> scale (`max|x| / 127`), the products are accumulated exactly in int32, and each result is
+> converted back with `input_scale * scales[j]` before the float32 bias is added.
 
 ### Example layout: the MNIST model
 
@@ -140,7 +161,7 @@ u32 4  i32 -1                               Softmax(axis=-1)
 A reader must reject a file (Python: `NawaFormatError`; C++: an exception) when any of these
 hold:
 
-1. The magic is wrong, or the version is not a supported version.
+1. The magic is wrong, or the version is not 1 or 2 (or a type 5 layer appears in a version 1 file).
 2. The file ends before a field is complete (truncated file).
 3. A tensor block has `ndim` > 8, a dim of 0, or a `numel` / byte count that overflows.
 4. A metadata constraint above is violated (for example, `std` ≤ 0 or `num_layers` = 0).
@@ -154,6 +175,7 @@ by the file reader.
 
 ## Version history
 
-| Version | Changes         |
-|---------|-----------------|
-| 1       | Initial format. |
+| Version | Changes                                                                          |
+|---------|----------------------------------------------------------------------------------|
+| 1       | Initial format.                                                                  |
+| 2       | Adds layer type 5 (LinearInt8). Otherwise identical. Readers must accept 1 and 2; writers use 1 unless the model contains a LinearInt8 layer, so float32 files are unchanged. |

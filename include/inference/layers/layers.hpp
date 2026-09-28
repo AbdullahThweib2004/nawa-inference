@@ -4,3 +4,4 @@
 #include "inference/layers/activations.hpp"
 #include "inference/layers/layer.hpp"
 #include "inference/layers/linear.hpp"
+#include "inference/layers/linear_int8.hpp"

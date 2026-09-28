@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
@@ -69,6 +70,18 @@ public:
     std::string summary() const;
 
     std::size_t num_parameters() const;
+
+    // Writes the model in the .nawa format (docs/model_format.md): version 1 for float32
+    // models, version 2 if it contains LinearInt8 layers. A loaded float32 model saves
+    // byte-identical to the file it came from.
+    void save(const std::string& path) const;
+
+    // A copy with every Linear layer quantized to LinearInt8 (tensor/int8.hpp). Metadata and
+    // the other layers are unchanged; the execution plan is rebuilt (Linear+ReLU stays fused).
+    Model quantize() const;
+
+    // 1 for float32 models, 2 if any layer is LinearInt8.
+    std::uint32_t format_version() const;
 
     // Number of values in one input sample (the product of metadata().input_shape).
     std::size_t input_features() const noexcept { return input_features_; }

@@ -13,6 +13,7 @@
 #include "inference/runtime/thread_pool.hpp"
 #include "inference/runtime/workspace.hpp"
 #include "inference/tensor/gemm.hpp"
+#include "inference/tensor/int8.hpp"
 
 using namespace inference;
 using nawa_bench::random_pixels;
@@ -23,6 +24,12 @@ namespace {
 // Loaded once, on first use, and shared by every benchmark.
 const Model& model() {
     static const Model m(nawa_bench::kModelPath);
+    return m;
+}
+
+// The same model with int8 weights (stage 9.6), quantized once.
+const Model& model_int8() {
+    static const Model m = model().quantize();
     return m;
 }
 
@@ -293,6 +300,96 @@ BENCHMARK(BM_GemmThreads)
     ->ArgsProduct({{1, 2, 4, 8}, {1024}, {1024}, {1024}})
     ->ArgsProduct({{1, 2, 4, 8}, {1, 4, 16, 64, 256}, {784}, {128}})
     ->UseRealTime()
+    ->Unit(benchmark::kMicrosecond);
+
+// ---------------------------------------------------------------------------
+// INT8 (stage 9.6): the same measurements as for float32, on the quantized model.
+// ---------------------------------------------------------------------------
+
+void BM_PredictInt8Workspace(benchmark::State& state) {
+    const auto batch = static_cast<std::size_t>(state.range(0));
+    const Tensor raw = random_pixels({batch, 784});
+    Workspace workspace;
+    (void)model_int8().predict(raw, workspace);
+    const nawa_bench::AllocStats before = nawa_bench::alloc_snapshot();
+    nawa_bench::LoopMeter meter;
+    for (auto _ : state) {
+        const Tensor& probs = model_int8().predict(raw, workspace);
+        benchmark::DoNotOptimize(probs.data());
+        benchmark::ClobberMemory();
+    }
+    meter.report(state);
+    const nawa_bench::AllocStats used = nawa_bench::alloc_snapshot() - before;
+    const auto iters = static_cast<double>(state.iterations());
+    state.SetItemsProcessed(state.iterations() * static_cast<std::int64_t>(batch));
+    state.counters["allocs_per_predict"] = static_cast<double>(used.count) / iters;
+    if (meter.has_cycles()) {
+        state.counters["cycles_per_image"] =
+            static_cast<double>(meter.cycles()) / (iters * static_cast<double>(batch));
+    }
+}
+BENCHMARK(BM_PredictInt8Workspace)
+    ->ArgName("batch")
+    ->Arg(1)
+    ->Arg(8)
+    ->Arg(32)
+    ->Arg(256)
+    ->Unit(benchmark::kMicrosecond);
+
+void BM_PredictLatencyInt8(benchmark::State& state) {
+    using Clock = std::chrono::steady_clock;
+    const Tensor raw = random_pixels({1, 784});
+    Workspace workspace;
+    (void)model_int8().predict(raw, workspace);
+    std::vector<double> micros;
+    micros.reserve(1 << 20);
+    for (auto _ : state) {
+        const auto start = Clock::now();
+        const Tensor& probs = model_int8().predict(raw, workspace);
+        benchmark::DoNotOptimize(probs.data());
+        benchmark::ClobberMemory();
+        const double seconds = std::chrono::duration<double>(Clock::now() - start).count();
+        state.SetIterationTime(seconds);
+        if (micros.size() < micros.capacity()) micros.push_back(seconds * 1e6);
+    }
+    if (micros.empty()) return;
+    const auto percentile = [&](double p) {
+        const auto k = static_cast<std::size_t>(p * static_cast<double>(micros.size() - 1));
+        std::nth_element(micros.begin(), micros.begin() + static_cast<std::ptrdiff_t>(k),
+                         micros.end());
+        return micros[k];
+    };
+    state.counters["p50_us"] = percentile(0.50);
+    state.counters["p90_us"] = percentile(0.90);
+    state.counters["p99_us"] = percentile(0.99);
+}
+BENCHMARK(BM_PredictLatencyInt8)->UseManualTime()->Unit(benchmark::kMicrosecond);
+
+// The int8 GEMM alone vs the float32 GEMM on the MNIST layer-1 shape. Args: kernel (0 = auto,
+// 1 = portable scalar reference), M. Single-threaded, so the kernels themselves are compared.
+void BM_GemmInt8(benchmark::State& state) {
+    const GemmKernel kernel = state.range(0) == 0 ? GemmKernel::Auto : GemmKernel::Portable;
+    const auto M = static_cast<std::size_t>(state.range(1));
+    set_num_threads(1);
+    const Tensor a = random_tensor({M, 784}, 1);
+    const Tensor w = random_tensor({784, 128}, 2);
+    const QuantizedMatrix q = QuantizedMatrix::quantize(w.data(), 784, 128);
+    Tensor c({M, 128});
+    nawa_bench::LoopMeter meter;
+    for (auto _ : state) {
+        gemm_int8(a.data(), M, q, c.data(), {}, kernel);
+        benchmark::DoNotOptimize(c.data());
+        benchmark::ClobberMemory();
+    }
+    meter.report(state);
+    state.counters["GOPS"] = benchmark::Counter(2.0 * static_cast<double>(M * 784 * 128) / 1e9,
+                                                benchmark::Counter::kIsIterationInvariantRate);
+    state.SetLabel(kernel_name(resolve_kernel(kernel)));
+    set_num_threads(default_num_threads());
+}
+BENCHMARK(BM_GemmInt8)
+    ->ArgNames({"scalar", "M"})
+    ->ArgsProduct({{0, 1}, {1, 256}})
     ->Unit(benchmark::kMicrosecond);
 
 }  // namespace

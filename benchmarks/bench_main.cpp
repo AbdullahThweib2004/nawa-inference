@@ -23,6 +23,8 @@
 
 #include "alloc_counter.hpp"
 #include "bench_common.hpp"
+#include "inference/layers/linear.hpp"
+#include "inference/layers/linear_int8.hpp"
 #include "inference/model/model.hpp"
 #include "inference/runtime/workspace.hpp"
 
@@ -102,6 +104,24 @@ void memory_report() {
 
     const Model model(nawa_bench::kModelPath);
     add_context("peak_rss_kib_after_model_load", std::to_string(peak_rss_kib()));
+    // Weight bytes held in memory: float32 packed weights vs int8 (the quantized model is
+    // built after this point, so its RSS isn't separable; count its bytes directly).
+    {
+        const Model int8 = model.quantize();
+        std::size_t fp32_bytes = 0, int8_bytes = 0;
+        for (const auto& layer : model.layers()) {
+            if (const auto* l = dynamic_cast<const inference::Linear*>(layer.get())) {
+                fp32_bytes += l->packed_weight().size_bytes();
+            }
+        }
+        for (const auto& layer : int8.layers()) {
+            if (const auto* l = dynamic_cast<const inference::LinearInt8*>(layer.get())) {
+                int8_bytes += l->weight().size_bytes();
+            }
+        }
+        add_context("weight_bytes_fp32_packed", std::to_string(fp32_bytes));
+        add_context("weight_bytes_int8", std::to_string(int8_bytes));
+    }
 
     for (const std::size_t batch : {std::size_t{1}, std::size_t{256}}) {
         const Tensor raw = nawa_bench::random_pixels({batch, 784});

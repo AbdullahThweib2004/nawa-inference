@@ -48,6 +48,9 @@ void print_usage(std::ostream& os) {
           "      t10k-labels-idx1-ubyte in <dir>, e.g. data/MNIST/raw). Default batch: 256.\n"
           "      --save-predictions writes 'index true predicted confidence' per image, so two\n"
           "      builds can be compared with diff.\n"
+          "  nawa quantize <in.nawa> <out.nawa>\n"
+          "      Convert a float32 model to INT8 weights (format version 2, ~4x smaller).\n"
+          "      eval and predict accept the result like any model.\n"
           "  nawa predict <model.nawa> <image> [--no-preprocess] [--show]\n"
           "      Classify a digit image (PNG, JPEG, BMP, ...). --show prints the 28x28 input\n"
           "      as ASCII art; --no-preprocess only resizes to 28x28 (for comparison).\n";
@@ -267,6 +270,26 @@ int cmd_eval(int argc, char** argv) {
 }
 
 // ---------------------------------------------------------------------------
+// nawa quantize
+// ---------------------------------------------------------------------------
+
+int cmd_quantize(int argc, char** argv) {
+    const Args args = parse_args(argc, argv, 2, {}, {});
+    if (args.positional.size() != 2) throw UsageError("quantize takes an input and an output path");
+    const Model model(args.positional[0]);
+    const Model quantized = model.quantize();
+    quantized.save(args.positional[1]);
+    const auto in_size = std::filesystem::file_size(args.positional[0]);
+    const auto out_size = std::filesystem::file_size(args.positional[1]);
+    std::cout << quantized.summary() << "\n\n"
+              << "Wrote " << args.positional[1] << ": " << with_commas(out_size) << " bytes (was "
+              << with_commas(in_size) << ", " << std::fixed << std::setprecision(2)
+              << static_cast<double>(in_size) / static_cast<double>(out_size)
+              << "x smaller), format version " << quantized.format_version() << '\n';
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
 // nawa predict
 // ---------------------------------------------------------------------------
 
@@ -326,6 +349,7 @@ int main(int argc, char** argv) {
         if (command == "info") return cmd_info(argc, argv);
         if (command == "eval") return cmd_eval(argc, argv);
         if (command == "predict") return cmd_predict(argc, argv);
+        if (command == "quantize") return cmd_quantize(argc, argv);
         throw UsageError("unknown command '" + command + "'");
     } catch (const UsageError& e) {
         std::cerr << "nawa: " << e.what() << "\n\n";

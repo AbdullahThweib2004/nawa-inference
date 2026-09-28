@@ -153,7 +153,7 @@ def test_model_tensor_magic_is_not_a_model():
 
 def test_model_bad_version():
     data = bytearray(nf.encode_model(make_model()))
-    data[4:8] = struct.pack("<I", 2)
+    data[4:8] = struct.pack("<I", 3)  # 1 and 2 are valid
     with pytest.raises(nf.NawaFormatError, match="version"):
         nf.decode_model(bytes(data))
 
@@ -210,3 +210,64 @@ def test_invalid_normalization_rejected():
 def test_empty_model_rejected():
     with pytest.raises(nf.NawaFormatError, match="at least one layer"):
         nf.encode_model(nf.Model((4,), nf.Normalization(1.0, [0.0], [1.0]), []))
+
+
+# ---------------------------------------------------------------------------
+# Format version 2: LinearInt8 (layer type 5)
+# ---------------------------------------------------------------------------
+
+
+def make_int8_model() -> nf.Model:
+    rng = np.random.default_rng(1)
+    weight = rng.integers(-127, 128, size=(3, 4), dtype=np.int8)  # {out, in}
+    return nf.Model(
+        input_shape=(4,),
+        normalization=nf.Normalization(1 / 255, [0.1307], [0.3081]),
+        layers=[nf.LinearInt8(weight, np.array([0.01, 0.02, 0.03], dtype=np.float32),
+                              np.array([0.5, -0.5, 0.0], dtype=np.float32)),
+                nf.ReLU(), nf.Softmax(-1)],
+    )
+
+
+def test_int8_model_round_trip_and_version():
+    model = make_int8_model()
+    data = nf.encode_model(model)
+    assert struct.unpack_from("<I", data, 4)[0] == 2  # version 2 when int8 layers exist
+    decoded = nf.decode_model(data)
+    layer = decoded.layers[0]
+    assert isinstance(layer, nf.LinearInt8)
+    np.testing.assert_array_equal(layer.weight, model.layers[0].weight)
+    np.testing.assert_array_equal(layer.scales, model.layers[0].scales)
+    np.testing.assert_array_equal(layer.bias, model.layers[0].bias)
+
+
+def test_float_models_still_write_version_1():
+    assert struct.unpack_from("<I", nf.encode_model(make_model()), 4)[0] == 1
+
+
+def test_int8_layer_in_version_1_file_rejected():
+    data = bytearray(nf.encode_model(make_int8_model()))
+    data[4:8] = struct.pack("<I", 1)
+    with pytest.raises(nf.NawaFormatError, match="requires format version 2"):
+        nf.decode_model(bytes(data))
+
+
+def test_int8_invalid_values_rejected():
+    bad_scale = make_int8_model()
+    bad_scale.layers[0].scales = np.array([0.01, 0.0, 0.03], dtype=np.float32)
+    with pytest.raises(nf.NawaFormatError, match="scales"):
+        nf.encode_model(bad_scale)
+    bad_weight = make_int8_model()
+    bad_weight.layers[0].weight[0, 0] = -128
+    with pytest.raises(nf.NawaFormatError, match="-127"):
+        nf.encode_model(bad_weight)
+
+
+def test_reads_committed_int8_model():
+    # The file written by `nawa quantize` (C++) must be readable by the Python reader.
+    from pathlib import Path
+    path = Path(__file__).resolve().parents[2] / "models" / "mnist_mlp_int8.nawa"
+    model = nf.load_model(path)
+    assert [type(l).__name__ for l in model.layers] == ["LinearInt8", "ReLU", "LinearInt8", "Softmax"]
+    assert model.layers[0].weight.shape == (128, 784)
+    assert nf.encode_model(model) == path.read_bytes()  # byte-identical round trip

@@ -230,7 +230,7 @@ TEST(ModelFormat, BadMagic) {
 
 TEST(ModelFormat, BadVersion) {
     TinyModel spec;
-    spec.version = 2;
+    spec.version = 3;  // 1 and 2 are valid
     EXPECT_THROW(Model::load(spec.build().write(temp_dir() / "m")), ModelFormatError);
 }
 
