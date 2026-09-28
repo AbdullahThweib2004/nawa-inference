@@ -5,6 +5,7 @@
 #include <string>
 
 #include "inference/layers/layer.hpp"
+#include "inference/tensor/gemm.hpp"
 #include "inference/tensor/tensor.hpp"
 
 namespace inference {
@@ -33,9 +34,14 @@ public:
     const Tensor& weight() const noexcept { return weight_; }
     const std::optional<Tensor>& bias() const noexcept { return bias_; }
 
+    // The weight packed for the GEMM kernel. Weights are constant during inference, so they
+    // are packed once here, at construction (= model load), instead of on every forward().
+    const PackedMatrix& packed_weight() const noexcept { return packed_; }
+
 private:
     Tensor weight_;               // {in_features, out_features}
     std::optional<Tensor> bias_;  // {out_features}, or empty for no bias
+    PackedMatrix packed_;         // weight_, packed for the active GEMM kernel
 };
 
 }  // namespace inference

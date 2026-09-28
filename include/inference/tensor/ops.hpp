@@ -1,7 +1,9 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 
+#include "inference/tensor/gemm.hpp"
 #include "inference/tensor/tensor.hpp"
 
 // Math operations on tensors. Every function returns a NEW contiguous tensor; inputs are
@@ -16,6 +18,12 @@ namespace inference {
 // Optimized; the original naive version is kept as matmul_naive() in reference.hpp.
 // Throws std::invalid_argument if either input is not 2-D or the inner dimensions differ.
 Tensor matmul(const Tensor& a, const Tensor& b);
+
+// Same, with an explicit kernel (tests use this to exercise every path).
+Tensor matmul(const Tensor& a, const Tensor& b, GemmKernel kernel);
+
+// matmul() packs B only when A has at least this many rows (see matmul for why).
+inline constexpr std::size_t kMatmulPackMinRows = 3;
 
 // Swaps rows and columns: {M, N} -> {N, M}. Copies the data.
 // Throws std::invalid_argument if t is not 2-D.

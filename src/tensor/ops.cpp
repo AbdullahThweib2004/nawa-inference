@@ -6,6 +6,7 @@
 #include <string>
 #include <utility>
 
+#include "gemm_kernels.hpp"
 #include "matmul_shapes.hpp"
 
 namespace inference {
@@ -166,39 +167,21 @@ std::size_t slice_argmax(const float* first, std::size_t count, std::size_t stri
 // Matrix operations
 // ---------------------------------------------------------------------------
 
-Tensor matmul(const Tensor& a, const Tensor& b) {
+Tensor matmul(const Tensor& a, const Tensor& b) { return matmul(a, b, GemmKernel::Auto); }
+
+Tensor matmul(const Tensor& a, const Tensor& b, GemmKernel kernel) {
     const auto [M, K, N] = detail::check_matmul_shapes(a, b, "matmul");
-
-    Tensor out({M, N});  // zero-initialized: the loop below accumulates into it
-    const float* A = a.data();
-    const float* B = b.data();
-    float* C = out.data();
-
-    // i-k-j loop order: for each row i of A and each k, add A[i][k] * (row k of B) to row i
-    // of C. Mathematically the same sum as the naive i-j-k loop (matmul_naive), in the same
-    // order of k for every C[i][j], but the memory access pattern is completely different:
-    //
-    //  - The inner loop walks j, so it reads B[k][0..N) and updates C[i][0..N): both are
-    //    CONTIGUOUS rows. Every byte of every cache line fetched is used, and the hardware
-    //    prefetcher can stream the next lines ahead of time.
-    //  - A[i][k] is one scalar for the whole inner loop, hoisted into a register.
-    //  - Each C[i][j] is updated by a different iteration, so the iterations are
-    //    INDEPENDENT: there is no running `acc` that every step must wait for. The compiler
-    //    can therefore process several j at once with SIMD instructions (mulps/addps),
-    //    without reordering any float additions.
-    //
-    // Remaining weakness: C's row is loaded and stored once per k (K times in total) instead
-    // of being kept in registers. Tiling (step 9.3) addresses that.
-    for (std::size_t i = 0; i < M; ++i) {
-        float* c_row = C + i * N;
-        const float* a_row = A + i * K;
-        for (std::size_t k = 0; k < K; ++k) {
-            const float a_ik = a_row[k];
-            const float* b_row = B + k * N;
-            for (std::size_t j = 0; j < N; ++j) {
-                c_row[j] += a_ik * b_row[j];
-            }
-        }
+    Tensor out({M, N});
+    const GemmKernel chosen = resolve_kernel(kernel);
+    // Packing B costs one pass over B (K*N values) on every call, because here B is not
+    // known to be constant. With only a few rows of A there isn't enough work to repay that,
+    // so small products use the unpacked i-k-j loop. (Linear packs its weights once at
+    // construction and always takes the packed path.) Threshold measured in
+    // docs/performance.md, stage 9.3.
+    if (chosen == GemmKernel::Portable || M < kMatmulPackMinRows) {
+        detail::gemm_ikj(a.data(), M, K, N, b.data(), out.data());
+    } else {
+        gemm(a.data(), M, PackedMatrix::pack(b.data(), K, N, chosen), out.data());
     }
     return out;
 }

@@ -63,3 +63,10 @@ target_compile_definitions(inference_tests PRIVATE
 # each one with CTest individually.
 include(GoogleTest)
 gtest_discover_tests(inference_tests)
+
+# The same tests again with the portable GEMM kernel forced (NAWA_KERNEL=portable), so the
+# fallback path used on CPUs without AVX2 is exercised on every machine, including CI.
+gtest_discover_tests(inference_tests
+    TEST_PREFIX "portable_kernel."
+    PROPERTIES ENVIRONMENT "NAWA_KERNEL=portable"
+)

@@ -83,6 +83,7 @@ add_library(inference_core STATIC
     src/tensor/tensor.cpp
     src/tensor/ops.cpp
     src/tensor/reference.cpp
+    src/tensor/gemm.cpp
     src/layers/linear.cpp
     src/layers/activations.cpp
     src/model/binary_io.cpp
@@ -91,6 +92,18 @@ add_library(inference_core STATIC
     src/data/idx.cpp
     src/data/digit_preprocess.cpp
 )
+# The AVX2 + FMA GEMM kernel is compiled with -mavx2 -mfma in THIS FILE ONLY; the library
+# chooses it at runtime if the CPU supports it (src/tensor/gemm.cpp). The default build stays
+# portable to any x86-64 CPU, yet uses AVX2 where available.
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|amd64|i[3-6]86" AND
+   CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_sources(inference_core PRIVATE src/tensor/gemm_avx2.cpp)
+    set_source_files_properties(src/tensor/gemm_avx2.cpp PROPERTIES COMPILE_OPTIONS "-mavx2;-mfma")
+    target_compile_definitions(inference_core PRIVATE NAWA_HAVE_AVX2_KERNEL=1)
+else()
+    target_compile_definitions(inference_core PRIVATE NAWA_HAVE_AVX2_KERNEL=0)
+endif()
+
 target_include_directories(inference_core PUBLIC
     ${PROJECT_SOURCE_DIR}/include
 )

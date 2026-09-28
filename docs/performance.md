@@ -48,6 +48,75 @@ improved 1.03× from 9.1 to 9.2.
   default (`-mprefer-vector-width=256`). FMA rounds once, so 770 of 10,000 confidences change
   in the last bits (max 1.1e-6), with no prediction changes.
 
+### 9.3: cache-blocked GEMM, packing, AVX2 micro-kernel, runtime dispatch
+
+`src/tensor/gemm.cpp` (portable) and `src/tensor/gemm_avx2.cpp` (compiled with
+`-mavx2 -mfma`, chosen at runtime by `__builtin_cpu_supports`; `NAWA_KERNEL=portable|avx2`
+overrides it). The **default portable build** gets the AVX2 kernel on any CPU that has it.
+
+- **Packing B:** columns in panels of 16, each stored as K consecutive rows of 16 floats, so
+  the micro-kernel reads B strictly sequentially. `Linear` packs its weights once, at model
+  load. Packing the 784×128 layer-1 weights costs **69k cycles**, which is **2.7× a whole
+  batch-1 `predict`** now, and pre-packing saves it on every call.
+- **Blocking (BLIS scheme):** KC = 256, so a 256×16 B micro-panel (16 KB) and a 6×256 A
+  micro-panel (6 KB) fit in the 48 KB L1. MC = 96, so the packed A block (96 KB) stays in
+  the 1.25 MB L2. NC = 512.
+
+  Tuning over MC ∈ {48, 96, 144, 192} × KC ∈ {128, 256, 384, 512} moved results by at most
+  ~5%, so the cache-derived values stay.
+- **Micro-kernel:** a 6×16 tile of C in 12 ymm accumulators. Per k: 2 loads of B,
+  6 broadcasts of A, 12 FMAs, and no memory traffic for C inside the loop (objdump):
+  ```
+  vmovups (%r8),%ymm2 ; vmovups 0x20(%r8),%ymm1          B[k][0..16)
+  vbroadcastss -0x18(%rax),%ymm3                          A[row 0][k]
+  vfmadd231ps %ymm2,%ymm3,%ymm14 ; vfmadd231ps %ymm1,%ymm3,%ymm13
+  ... 5 more broadcast + 2 FMA pairs (ymm12..ymm0) ...
+  ```
+  12 independent accumulators hide the FMA latency: 2 units × 4 cycles = 8 must be in
+  flight.
+- **Edge tiles:** row counts 1-5 use smaller instantiations of the same kernel. Partial
+  column panels go through a 6×16 temporary.
+- **M = 1 (batch 1)** uses a separate matrix-vector loop over the packed panels (4 panels at
+  once, 8 accumulators). It never packs A, and it gives bit-identical results to a row
+  inside a batch (same k order).
+- **Plain `matmul()`** (B not pre-packed) packs B only from **M ≥ 3**. Measured at
+  K = 784, N = 128, in cycles:
+
+  | M | unpacked i-k-j | pack + GEMM |
+  |---|---|---|
+  | 1 | **48k** | 91k |
+  | 2 | **97k** | 100k |
+  | 4 | 194k | **106k** |
+  | 8 | 388k | **146k** |
+  | 32 | 1.55M | **323k** |
+- **AVX-512 was not implemented.** On this CPU it has the same 32 FLOP/cycle peak (one
+  512-bit FMA unit instead of two 256-bit ones), and the AVX2 kernel already reaches 84-90%
+  of that on large shapes. At most ~10% is left, and 512-bit code risks lower clocks.
+
+**FLOP/cycle per shape** (median, default build, peak = 32):
+
+| M×K×N | `matmul()` (packs B per call) | % of peak | pre-packed B (as in Linear) | % of peak |
+|---|---|---|---|---|
+| 32³ | 13.4 | 42% | 17.3 | 54% |
+| 64³ | 20.7 | 65% | 23.3 | 73% |
+| 128³ | 24.1 | 75% | 27.0 | 84% |
+| 256³ | 27.4 | 86% | 28.7 | 90% |
+| 512³ | 26.5 | 83% | 28.1 | 88% |
+| 1024³ | 25.0 | 78% | 26.5 | 83% |
+| 1×784×128 | 4.3 (unpacked i-k-j) | 13% | 8.6 (gemv) | 27% |
+| 256×784×128 | 25.5 | 80% | 26.8 | 84% |
+| 256×128×10 | 9.9 | 31% | 10.4 | 32% |
+
+Small shapes and N = 10 can't fill the 6×16 tiles or amortize loop overhead. Batch 1 is
+limited by streaming the 401 KB of weights from L2 (about 17 bytes per cycle), not by FMAs.
+
+**After 9.3,** batch-256 `predict` takes 3.74M cycles: Linear(784→128) 2.25M (60%, of which
+the bias add ~0.33M), preprocess 0.72M (19%), ReLU 0.48M (13%), Linear(128→10) 0.09M, and
+Softmax 0.08M. **The non-GEMM work is now about half the time.** Still 65 allocations per call.
+
+In the `NAWA_NATIVE=ON` build `predict` is *slower* after 9.3 (39k vs 26k cycles at batch
+1), because of the broadcasting regression below. Fixed in 9.4.
+
 ### Known regression in 9.2: broadcasting got slower
 
 With `-march=native`, GCC also vectorizes the tiny per-element loop in the general

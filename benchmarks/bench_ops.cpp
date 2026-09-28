@@ -67,6 +67,88 @@ void BM_MatmulNaive(benchmark::State& state) { run_matmul(state, matmul_naive); 
 BENCHMARK(BM_Matmul)->Apply(matmul_shapes);
 BENCHMARK(BM_MatmulNaive)->Apply(matmul_shapes);
 
+// GEMM with B packed ONCE, outside the timed loop: what Linear does with its weights.
+void BM_MatmulPacked(benchmark::State& state) {
+    const auto M = static_cast<std::size_t>(state.range(0));
+    const auto K = static_cast<std::size_t>(state.range(1));
+    const auto N = static_cast<std::size_t>(state.range(2));
+    const Tensor a = random_tensor({M, K}, 1);
+    const Tensor b = random_tensor({K, N}, 2);
+    const PackedMatrix packed = PackedMatrix::pack(b.data(), K, N);
+    Tensor c({M, N});
+    nawa_bench::LoopMeter meter;
+    for (auto _ : state) {
+        gemm(a.data(), M, packed, c.data());
+        benchmark::DoNotOptimize(c.data());
+        benchmark::ClobberMemory();
+    }
+    meter.report(state);
+    const double flop = 2.0 * static_cast<double>(M * K * N);
+    state.counters["GFLOPS"] = rate(flop / 1e9);
+    if (meter.has_cycles()) {
+        state.counters["FLOP_per_cycle"] =
+            flop * static_cast<double>(state.iterations()) / static_cast<double>(meter.cycles());
+    }
+    state.SetLabel(kernel_name(packed.kernel()));
+}
+BENCHMARK(BM_MatmulPacked)->Apply(matmul_shapes);
+
+// The cost of packing the MNIST layer-1 weights: saved on every call by pre-packing.
+void BM_PackB(benchmark::State& state) {
+    const auto K = static_cast<std::size_t>(state.range(0));
+    const auto N = static_cast<std::size_t>(state.range(1));
+    const Tensor b = random_tensor({K, N}, 2);
+    nawa_bench::LoopMeter meter;
+    for (auto _ : state) {
+        PackedMatrix packed = PackedMatrix::pack(b.data(), K, N);
+        benchmark::DoNotOptimize(packed.data());
+        benchmark::ClobberMemory();
+    }
+    meter.report(state);
+}
+BENCHMARK(BM_PackB)
+    ->ArgNames({"K", "N"})
+    ->Args({784, 128})
+    ->Args({128, 10})
+    ->Unit(benchmark::kMicrosecond);
+
+// Small-M strategy for matmul() (B not pre-packed): unpacked i-k-j vs pack-then-GEMM.
+void BM_SmallM_Ikj(benchmark::State& state) {
+    const auto M = static_cast<std::size_t>(state.range(0));
+    const Tensor a = random_tensor({M, 784}, 1);
+    const Tensor b = random_tensor({784, 128}, 2);
+    nawa_bench::LoopMeter meter;
+    for (auto _ : state) {
+        Tensor c = matmul(a, b, GemmKernel::Portable);  // the unpacked i-k-j loop
+        benchmark::DoNotOptimize(c.data());
+        benchmark::ClobberMemory();
+    }
+    meter.report(state);
+}
+void BM_SmallM_PackGemm(benchmark::State& state) {
+    const auto M = static_cast<std::size_t>(state.range(0));
+    const Tensor a = random_tensor({M, 784}, 1);
+    const Tensor b = random_tensor({784, 128}, 2);
+    Tensor c({M, 128});
+    nawa_bench::LoopMeter meter;
+    for (auto _ : state) {
+        gemm(a.data(), M, PackedMatrix::pack(b.data(), 784, 128), c.data());
+        benchmark::DoNotOptimize(c.data());
+        benchmark::ClobberMemory();
+    }
+    meter.report(state);
+}
+BENCHMARK(BM_SmallM_Ikj)
+    ->ArgName("M")
+    ->RangeMultiplier(2)
+    ->Range(1, 32)
+    ->Unit(benchmark::kMicrosecond);
+BENCHMARK(BM_SmallM_PackGemm)
+    ->ArgName("M")
+    ->RangeMultiplier(2)
+    ->Range(1, 32)
+    ->Unit(benchmark::kMicrosecond);
+
 // ---------------------------------------------------------------------------
 // Memory-bound ops: measured in GB/s of the MINIMUM traffic (every input byte read once,
 // every output byte written once). Real traffic can be higher; this is the useful-work rate.

@@ -21,6 +21,7 @@ Linear::Linear(Tensor weight, std::optional<Tensor> bias)
                                     shape_to_string(weight_.shape()) + ", got " +
                                     shape_to_string(bias_->shape()));
     }
+    packed_ = PackedMatrix::pack(weight_.data(), in_features(), out_features());
 }
 
 Tensor Linear::forward(const Tensor& input) const {
@@ -30,8 +31,9 @@ Tensor Linear::forward(const Tensor& input) const {
                                     shape_to_string(input.shape()) + " (weight " +
                                     shape_to_string(weight_.shape()) + ")");
     }
-    // {batch, in} · {in, out} -> {batch, out}
-    Tensor output = input.matmul(weight_);
+    // {batch, in} · {in, out} -> {batch, out}, using the weights packed at construction.
+    Tensor output({input.size(0), out_features()});
+    gemm(input.data(), input.size(0), packed_, output.data());
     if (bias_) {
         // {batch, out} + {out}: the bias row is broadcast to every sample in the batch.
         output = output + *bias_;
