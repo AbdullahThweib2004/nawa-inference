@@ -1,8 +1,83 @@
 # Performance
 
-This is the **baseline**: the naive engine from steps 1-7, measured before any optimization.
-Every optimization in step 9 is compared against `benchmarks/results/baseline.json` with
+This file starts with the **optimization progress** of step 9, then documents the
+**baseline**: the naive engine from steps 1-7, measured before any optimization. Every
+optimization is compared against `benchmarks/results/baseline.json` with
 `python/compare_bench.py`.
+
+## Optimization progress (step 9)
+
+| stage | change | result file |
+|---|---|---|
+| baseline | naive i-j-k matmul, `-O3`, SSE2 only | `baseline.json` |
+| 9.1 | i-k-j loop order in matmul (same flags) | `step9_1_loop_order.json` |
+| 9.2 | `-DNAWA_NATIVE=ON` (`-march=native`: AVX2, FMA) on top of 9.1 | `step9_2_native.json` |
+
+Medians of 5 repetitions, pinned to one core, interleaved. Peak = 32 FLOP/cycle
+(see "Peak single-core FP32 throughput" below).
+
+| benchmark | baseline | 9.1 | 9.2 |
+|---|---|---|---|
+| matmul 512³, FLOP/cycle (% of peak) | 0.51 (1.6%) | 3.77 (11.8%) | 5.80 (18.1%) |
+| matmul 1024³, FLOP/cycle (% of peak) | 0.24 (0.7%) | 3.38 (10.6%) | 4.44 (13.9%) |
+| MNIST layer 1 {256,784}×{784,128}, FLOP/cycle (% of peak) | 0.51 (1.6%) | 4.18 (13.1%) | 5.44 (17.0%)¹ |
+| MNIST layer 1, one image {1,784}×{784,128}, FLOP/cycle | 0.51 | 3.60 | 4.79 |
+| MNIST layer 2 {256,128}×{128,10}, FLOP/cycle | 0.65 | 1.73 | 1.91 |
+| `predict` batch 1, cycles per image | 407k | 60.0k (6.8×) | 58.2k (7.0×) |
+| `predict` batch 256, cycles per image | 407k | 56.0k (7.3×) | 50.3k (8.1×) |
+| `predict` batch-1 latency p50 / p99 (µs, wall) | 134 / 172 | 18.0 / 25.6 | 18.9 / 28.3² |
+| `predict` batch 256, images/s (wall) | 6,194 | 55,927 | 65,770 |
+| `nawa eval`, 10,000 images, accuracy | 97.15% | 97.15% (bit-identical to naive) | 97.15% (same 285 mistakes) |
+
+¹ This benchmark varies more from run to run in the native build: separate runs gave 5.9M,
+8.3M (three times) and 9.5M cycles (5.44 FLOP/cycle is from the recorded 9.5M). Fast, memory-heavy
+kernels are more sensitive to where their buffers sit in memory than the old latency-bound
+loop. Compare stages with several runs, not one.
+
+² Wall-clock latency depends on the clock at the time of the run. In cycles, batch 1
+improved 1.03× from 9.1 to 9.2.
+
+### What each stage did
+
+- **9.1, i-k-j.** The inner loop walks contiguous rows of B and C with A[i][k] in a
+  register. Iterations are independent, so GCC vectorizes it with 4-wide SSE
+  (`movups, mulps, addps, movups`) instead of the serial `addss` chain. Results are
+  bit-identical to `matmul_naive`: the summation order per element is unchanged.
+- **9.2, `-march=native`.** The same loop becomes 8-wide AVX2 with a fused multiply-add
+  (`vmovups ymm, vfmadd213ps ymm, vmovups`). GCC keeps 256-bit vectors on this AVX-512 CPU by
+  default (`-mprefer-vector-width=256`). FMA rounds once, so 770 of 10,000 confidences change
+  in the last bits (max 1.1e-6), with no prediction changes.
+
+### Known regression in 9.2: broadcasting got slower
+
+With `-march=native`, GCC also vectorizes the tiny per-element loop in the general
+broadcasting path (`offset += index[d] * stride[d]`, 2 iterations for 2-D tensors) using
+AVX-512 64-bit multiplies (`vpmullq`), mask registers and cross-lane shuffles. For 2 iterations
+that setup costs far more than the scalar code. Measured in the same run:
+
+| cycles per call | portable (9.1) | native (9.2) |
+|---|---|---|
+| bias-broadcast add {256,128}+{128} | 0.32-0.33M | **1.77M (5.4×)** |
+| Softmax {256,10} (uses broadcast subtract and divide) | 83k | **329k (4×)** |
+
+`predict` still got faster overall, because matmul dominates. But in the native build the
+bias add is now ~17-23% of a Linear(784→128) forward pass at batch 256.
+
+### Where the time goes after 9.2
+
+| `predict` part (native build) | batch 1 | batch 256 |
+|---|---|---|
+| Linear(784→128): matmul + bias add | 72% | 85% (matmul ~62-77%, bias add ~17-23%) |
+| Linear(128→10) | 4.5% | 4.4% |
+| Softmax | 5.3% | 3.0% |
+| preprocess | 3.9% | 6.1% |
+| ReLU | 0.4% | 0.2% |
+| other (input copy, 65 allocations, glue) | 14% | 1.3% |
+
+Matmul went from ~98% to roughly 60-75% of `predict`. Amdahl's law is now visible: the 1.3-1.6×
+matmul gain from 9.2 turned into only 1.03-1.11× for `predict`, because the rest didn't get
+faster. Some of it (broadcasting) even got slower.
+
 
 ## How to run
 

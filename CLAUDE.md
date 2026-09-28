@@ -200,6 +200,15 @@ A lightweight neural network inference engine in C++, written from scratch. It i
 - Baseline facts: matmul is 97.7% of `predict`; naive matmul reaches 0.51 FLOP/cycle
   against a peak of 32 (1.6%), because of the serial `addss` dependency chain and B's
   column-stride cache misses.
+- **`matmul_naive` (`include/inference/tensor/reference.hpp`) is the permanent reference.**
+  Never optimize it. Every matmul change must pass `tests/test_matmul_diff.cpp`, whose
+  tolerance is the float dot-product error bound `2*K*eps*sum|a*b|`, not exact equality.
+  `BM_MatmulNaive` benchmarks it in the same run.
+- Progress so far: see the table at the top of `docs/performance.md`. After 9.2, matmul
+  reaches ~5.4-5.8 FLOP/cycle (17-18% of peak). The native build made the general
+  broadcasting path 4-5× slower (known regression, documented there).
+- Cycle counts are ~1% stable for latency-bound code, but the fast native matmul varies
+  ±25% between separate runs. Compare stages over several runs.
 
 ## Workflow rules
 
@@ -249,4 +258,7 @@ To add a test file, create `tests/test_<name>.cpp` and add it to `inference_test
 7. End-to-end MNIST inference (`nawa` CLI) ✅
 8. Benchmarking infrastructure ✅
 9. **Optimization (threads, SIMD, INT8 quantization)** ← *current step*
+   - 9.1 i-k-j loop order in matmul ✅ (`matmul_naive` kept as the reference; differential tests)
+   - 9.2 optional `-march=native` (`NAWA_NATIVE`) ✅
+   - **9.3 register/cache blocking of matmul** ← *current stage*
 10. Extensions
