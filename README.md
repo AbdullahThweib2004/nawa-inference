@@ -24,8 +24,10 @@ Early development. Done so far:
 - a trained MNIST model exported to the [Nawa model format](docs/model_format.md)
 - a C++ model loader and runtime that matches PyTorch's outputs (max error < 1e-6)
 - the `nawa` command-line tool: 97.15% on the MNIST test set, plus predictions on your own images
+- a benchmarking baseline ([docs/performance.md](docs/performance.md)): the naive engine reaches
+  1.6% of the CPU's peak FP32 throughput, and matmul takes 98% of the inference time
 
-Benchmarking and CPU optimization are next.
+CPU optimization (cache-friendly matmul, SIMD, threads, INT8) is next.
 
 - [x] 1. Project scaffolding
 - [x] 2. Tensor core
@@ -34,7 +36,7 @@ Benchmarking and CPU optimization are next.
 - [x] 5. Python training and weight export (MNIST)
 - [x] 6. Model loading and runtime
 - [x] 7. End-to-end MNIST inference
-- [ ] 8. Benchmarking
+- [x] 8. Benchmarking
 - [ ] 9. Optimization (threads, SIMD, INT8)
 - [ ] 10. Extensions
 
@@ -115,6 +117,21 @@ The preprocessing inverts dark-on-light images, crops to the digit, scales it to
 centers it the way MNIST does. `--show` lets you check what the model actually sees. Photos
 with shadows or uneven lighting may need cropping and more contrast first.
 
+## Benchmarks
+
+```bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DENABLE_BENCHMARKS=ON
+cmake --build build -j
+./build/bin/nawa_bench                                   # all benchmarks
+./build/bin/nawa_bench --benchmark_filter=BM_Predict     # a subset
+
+# Compare two recorded result files (standard-library Python)
+python3 python/compare_bench.py benchmarks/results/baseline.json new.json --metric cycles_per_iter
+```
+
+See [docs/performance.md](docs/performance.md) for the baseline numbers, how to record a
+comparable run, and why CPU cycles are more trustworthy than seconds on a laptop.
+
 ## Train and export (Python)
 
 Python is used only to train the MNIST model and export it for the C++ engine. The
@@ -139,7 +156,7 @@ The file format is specified in [docs/model_format.md](docs/model_format.md).
 | Option              | Default | Description                                   |
 |---------------------|---------|-----------------------------------------------|
 | `ENABLE_TESTS`      | ON      | Build the GoogleTest unit tests               |
-| `ENABLE_BENCHMARKS` | OFF     | Build the benchmarks                          |
+| `ENABLE_BENCHMARKS` | OFF     | Build `nawa_bench` (Google Benchmark)         |
 | `BUILD_EXAMPLES`    | ON      | Build the example programs in `examples/`     |
 | `ENABLE_SANITIZERS` | OFF     | ASan + UBSan in Debug builds (GCC/Clang only) |
 

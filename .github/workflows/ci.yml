@@ -31,9 +31,12 @@ jobs:
           cmake -S . -B build -G Ninja
           -DCMAKE_BUILD_TYPE=Release
           -DENABLE_TESTS=ON
+          -DENABLE_BENCHMARKS=ON
           -DCMAKE_C_COMPILER=${{ matrix.cc }}
           -DCMAKE_CXX_COMPILER=${{ matrix.cxx }}
 
+      # Benchmarks are compiled (so they can't silently break) but never run here: timings on
+      # shared CI machines are noise. Record results locally (docs/performance.md).
       - name: Build
         run: cmake --build build
 
