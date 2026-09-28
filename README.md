@@ -4,6 +4,13 @@
 
 A lightweight neural network inference engine built from scratch in C++.
 
+![The Nawa web demo: a hand-drawn 5, the 28×28 input the model sees, the network's hidden
+neurons and strongest connections, and the prediction](docs/images/demo_light.png)
+
+*A hand-drawn 5, classified by the C++ engine: what the model sees, which of its 128 hidden
+neurons fire, the connections that push toward the answer, and the result.
+([Web demo](#web-demo))*
+
 ## Why
 
 Nawa is a learning project. The goal is to understand what actually happens when a trained
@@ -137,7 +144,19 @@ Then open **http://127.0.0.1:8080/**. Options: `--port 8080` (`0` picks a free p
 Stop it with Ctrl+C. Plain HTML/CSS/JavaScript (no framework, no internet needed). The
 **Example** button draws a sample digit if you'd rather not draw.
 
-<!-- screenshot: docs/web-demo.png -->
+![Web demo in light mode](docs/images/demo_light.png)
+
+*Light mode. There's also a [dark mode](docs/images/demo_dark.png) and a
+[close-up of the network](docs/images/demo_network.png) with the weight map of the hidden
+neuron that pushes hardest toward the answer.*
+
+To regenerate the screenshots (headless Chromium via Playwright, in `.venv`):
+
+```bash
+pip install -r python/requirements-dev.txt
+python -m playwright install chromium
+python tools/screenshot.py        # needs build/bin/nawa; writes docs/images/demo_*.png
+```
 
 ## Performance
 

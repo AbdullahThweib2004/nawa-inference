@@ -1,0 +1,4 @@
+# Development tools only (not installed by CI). Screenshots of the web demo:
+#   pip install -r python/requirements-dev.txt && python -m playwright install chromium
+#   python tools/screenshot.py
+playwright>=1.40
