@@ -16,18 +16,18 @@ to train models and export their weights.
 
 ## Status
 
-Early development. Done so far:
+Steps 1-9 are done:
 
 - the tensor data structure
 - math operations: matmul, transpose, element-wise ops with broadcasting, reductions
-- inference layers: Linear, ReLU, Sigmoid, Softmax
+- inference layers: Linear, ReLU, Sigmoid, Softmax, and an INT8 Linear
 - a trained MNIST model exported to the [Nawa model format](docs/model_format.md)
 - a C++ model loader and runtime that matches PyTorch's outputs (max error < 1e-6)
 - the `nawa` command-line tool: 97.15% on the MNIST test set, plus predictions on your own images
-- a benchmarking baseline ([docs/performance.md](docs/performance.md)): the naive engine reaches
-  1.6% of the CPU's peak FP32 throughput, and matmul takes 98% of the inference time
+- CPU optimization: a cache-blocked AVX2 GEMM at ~88% of peak, allocation-free inference,
+  a thread pool, and INT8 quantization (see [Performance](#performance))
 
-CPU optimization (cache-friendly matmul, SIMD, threads, INT8) is next.
+Step 10 (extensions) is next.
 
 - [x] 1. Project scaffolding
 - [x] 2. Tensor core
@@ -37,7 +37,7 @@ CPU optimization (cache-friendly matmul, SIMD, threads, INT8) is next.
 - [x] 6. Model loading and runtime
 - [x] 7. End-to-end MNIST inference
 - [x] 8. Benchmarking
-- [ ] 9. Optimization (threads, SIMD, INT8)
+- [x] 9. Optimization (threads, SIMD, INT8)
 - [ ] 10. Extensions
 
 ## Prerequisites
@@ -96,6 +96,10 @@ After building, the tool is at `build/bin/nawa`:
 
 # Same image without MNIST-style preprocessing, for comparison
 ./build/bin/nawa predict models/mnist_mlp.nawa examples/images/digit2_inverted.png --no-preprocess
+
+# Quantize to INT8 weights (4x smaller file); eval and predict accept the result
+./build/bin/nawa quantize models/mnist_mlp.nawa models/mnist_mlp_int8.nawa
+./build/bin/nawa eval models/mnist_mlp_int8.nawa --mnist data/MNIST/raw
 ```
 
 `examples/images/` has three demo images made from MNIST test digits: `digit7_mnist.png`
@@ -116,6 +120,30 @@ the first one is.
 The preprocessing inverts dark-on-light images, crops to the digit, scales it to 20 px and
 centers it the way MNIST does. `--show` lets you check what the model actually sees. Photos
 with shadows or uneven lighting may need cropping and more contrast first.
+
+## Performance
+
+Measured on an Intel i7-11370H laptop (4 cores, AVX2 + FMA), default portable build. The
+full story, stage by stage, is in [docs/performance.md](docs/performance.md).
+
+| | naive engine (step 8) | optimized (step 9) |
+|---|---|---|
+| matmul efficiency (share of one core's FP32 peak) | 1.6% | **~88%** |
+| batch-1 latency (p50) | 134 µs | **7.4 µs** (INT8: **4.5 µs**) |
+| batch-256 throughput, 1 thread | 6,194 images/s | **390,079 images/s** (63×) |
+| batch-256 throughput, 4 threads | — | **624,554 images/s** (101×) |
+| heap allocations per prediction | 65 | **0** |
+| model file | 407 KB | 407 KB (INT8: **103 KB**) |
+| MNIST test accuracy | 97.15% | 97.15% (INT8: 97.14%) |
+
+What got it there:
+- **i-k-j loop order:** removed a serial dependency chain;
+- **cache blocking, packed weights and a 6×16 AVX2/FMA micro-kernel,** chosen at runtime so
+  the portable build still runs everywhere;
+- **zero-allocation inference** with a fused Linear+ReLU epilogue;
+- **a thread pool** with bit-identical results for any thread count;
+- **INT8 weights**, which are 4× smaller and faster for single images. On this CPU they are
+  slower for large batches: that would need VNNI.
 
 ## Benchmarks
 
@@ -159,7 +187,8 @@ The file format is specified in [docs/model_format.md](docs/model_format.md).
 | `ENABLE_BENCHMARKS` | OFF     | Build `nawa_bench` (Google Benchmark)         |
 | `BUILD_EXAMPLES`    | ON      | Build the example programs in `examples/`     |
 | `ENABLE_SANITIZERS` | OFF     | ASan + UBSan in Debug builds (GCC/Clang only) |
-| `NAWA_NATIVE`       | OFF     | `-march=native`: faster (AVX2/FMA), but the binary only runs on CPUs like yours |
+| `NAWA_NATIVE`       | OFF     | `-march=native` for the whole build (AVX2/FMA are already used at runtime without it) |
+| `ENABLE_TSAN`       | OFF     | ThreadSanitizer (GCC/Clang; not together with `ENABLE_SANITIZERS`) |
 
 ## Project layout
 

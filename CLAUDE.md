@@ -334,7 +334,7 @@ To add a test file, create `tests/test_<name>.cpp` and add it to `inference_test
 6. Model loading and runtime (file format, computational graph, executor) ✅
 7. End-to-end MNIST inference (`nawa` CLI) ✅
 8. Benchmarking infrastructure ✅
-9. **Optimization (threads, SIMD, INT8 quantization)** ← *current step*
+9. Optimization (threads, SIMD, INT8 quantization) ✅
    - 9.1 i-k-j loop order in matmul ✅ (`matmul_naive` kept as the reference; differential tests)
    - 9.2 optional `-march=native` (`NAWA_NATIVE`) ✅
    - 9.3 cache-blocked GEMM + AVX2 micro-kernel + runtime dispatch + pre-packed weights ✅
@@ -344,5 +344,7 @@ To add a test file, create `tests/test_<name>.cpp` and add it to `inference_test
      TSan CI job; scaling limited by the laptop's power budget, see docs/performance.md)
    - 9.6 INT8 quantization ✅ (`nawa quantize`, format v2; 4x smaller, 97.14% vs 97.15%;
      faster at batch 1, slower at batch 256 without VNNI, see docs/performance.md)
-   - **Wrap-up** ← *current*: full progress table, README "Performance", step 9 done
-10. Extensions
+10. **Extensions** ← *current step*. Candidates, each measured with compare_bench.py:
+    an AVX-512 VNNI INT8 kernel (`vpdpbusd`), a convolutional layer (Conv2D, so position
+    no longer matters to the model), more layer types in the file format, or batching/serving
+    with the thread pool.
