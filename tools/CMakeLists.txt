@@ -16,6 +16,12 @@ if(ENABLE_TESTS)
     add_test(NAME cli.predict COMMAND nawa predict ${_model} ${_images}/digit2_inverted.png --show)
     set_tests_properties(cli.predict PROPERTIES PASS_REGULAR_EXPRESSION "Predicted digit: 2")
 
+    # --json: one JSON object and nothing else (python/make_figures.py parses it).
+    add_test(NAME cli.predict_json
+             COMMAND nawa predict ${_model} ${_images}/digit2_inverted.png --no-preprocess --json)
+    set_tests_properties(cli.predict_json PROPERTIES PASS_REGULAR_EXPRESSION
+                         "^{\"input28\":\\[[^]]+\\],\"prediction\":7,\"preprocessed\":false,\"probabilities\":\\[[^]]+\\]}\n$")
+
     # Errors must produce a non-zero exit code.
     add_test(NAME cli.unknown_command COMMAND nawa frobnicate)
     add_test(NAME cli.missing_model COMMAND nawa info ${PROJECT_SOURCE_DIR}/no/such/model.nawa)

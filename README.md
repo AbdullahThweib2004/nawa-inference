@@ -21,6 +21,11 @@ tensors, layers, model loading, and a computational graph, followed by CPU optim
 All math is written by hand in C++20, with no Eigen or BLAS. Python (PyTorch) is used only
 to train models and export their weights.
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/architecture_dark.png">
+  <img src="docs/images/architecture.png" alt="Training in Python with PyTorch, exported to mnist_mlp.nawa, run by the C++ Nawa engine (tensors, AVX2 GEMM, thread pool, INT8), shown in the web demo">
+</picture>
+
 ## Status
 
 Steps 1-9 are done:
@@ -114,6 +119,14 @@ After building, the tool is at `build/bin/nawa`:
 corner). With preprocessing all three are classified correctly; with `--no-preprocess` only
 the first one is.
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/confident_wrong_dark.png">
+  <img src="docs/images/confident_wrong.png" alt="The inverted 2 without preprocessing: the model predicts 7 with 100.00% confidence">
+</picture>
+
+*Without preprocessing, the dark-on-light 2 is a confident 7: the network was only ever shown
+light digits on a dark background. Preprocessing fixes it (2 at 99.4%).*
+
 ### Draw your own digit
 
 1. Draw a single digit in any paint program: a dark pen on a white background (or white on
@@ -150,18 +163,32 @@ Stop it with Ctrl+C. Plain HTML/CSS/JavaScript (no framework, no internet needed
 [close-up of the network](docs/images/demo_network.png) with the weight map of the hidden
 neuron that pushes hardest toward the answer.*
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/neuron_maps_dark.png">
+  <img src="docs/images/neuron_maps.png" alt="First-layer weights of 16 hidden neurons as 28 by 28 images, red where ink excites the neuron and blue where it inhibits it">
+</picture>
+
+*The weight maps behind the demo's hover cards: 16 of the 128 hidden neurons, picked by weight
+variance. Each one responds to strokes in particular places.*
+
 To regenerate the screenshots (headless Chromium via Playwright, in `.venv`):
 
 ```bash
 pip install -r python/requirements-dev.txt
 python -m playwright install chromium
 python tools/screenshot.py        # needs build/bin/nawa; writes docs/images/demo_*.png
+python python/make_figures.py     # the charts and diagrams (light and dark) from real data
 ```
 
 ## Performance
 
 Measured on an Intel i7-11370H laptop (4 cores, AVX2 + FMA), default portable build. The
 full story, stage by stage, is in [docs/performance.md](docs/performance.md).
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/speedup_chart_dark.png">
+  <img src="docs/images/speedup_chart.png" alt="Share of one core's peak for a 512 by 512 matmul: baseline 1.6%, loop order 11.8%, -march=native 18.1%, AVX2 GEMM 87.8%, memory and fusion 91.3%">
+</picture>
 
 | | naive engine (step 8) | optimized (step 9) |
 |---|---|---|

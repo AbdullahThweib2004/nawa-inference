@@ -2,3 +2,4 @@
 #   pip install -r python/requirements-dev.txt && python -m playwright install chromium
 #   python tools/screenshot.py
 playwright>=1.40
+matplotlib>=3.8

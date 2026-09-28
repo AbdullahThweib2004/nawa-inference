@@ -2,7 +2,7 @@
 //
 //   nawa info    <model.nawa>
 //   nawa eval    <model.nawa> --mnist <dir> [--batch N]
-//   nawa predict <model.nawa> <image> [--no-preprocess] [--show]
+//   nawa predict <model.nawa> <image> [--no-preprocess] [--show] [--json]
 
 #include <algorithm>
 #include <array>
@@ -16,6 +16,7 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <nlohmann/json.hpp>
 #include <numeric>
 #include <optional>
 #include <sstream>
@@ -60,9 +61,10 @@ void print_usage(std::ostream& os) {
           "             [--web <dir>]\n"
           "      Web demo: draw a digit in the browser, the C++ engine classifies it.\n"
           "      Serves web/ and a JSON API; --port 0 picks a free port.\n"
-          "  nawa predict <model.nawa> <image> [--no-preprocess] [--show]\n"
+          "  nawa predict <model.nawa> <image> [--no-preprocess] [--show] [--json]\n"
           "      Classify a digit image (PNG, JPEG, BMP, ...). --show prints the 28x28 input\n"
-          "      as ASCII art; --no-preprocess only resizes to 28x28 (for comparison).\n";
+          "      as ASCII art; --no-preprocess only resizes to 28x28 (for comparison);\n"
+          "      --json prints the prediction, all 10 probabilities and the 28x28 input.\n";
 }
 
 // Splits arguments into positional values and --flags. `value_flags` take a value.
@@ -351,7 +353,11 @@ int cmd_serve(int argc, char** argv) {
 // ---------------------------------------------------------------------------
 
 int cmd_predict(int argc, char** argv) {
-    const Args args = parse_args(argc, argv, 2, {"--no-preprocess", "--show"}, {});
+    const Args args = parse_args(argc, argv, 2, {"--no-preprocess", "--show", "--json"}, {});
+    // With --json the human-readable lines go nowhere and only one JSON object is printed.
+    const bool as_json = args.has("--json");
+    std::ostringstream discarded;
+    std::ostream& out = as_json ? static_cast<std::ostream&>(discarded) : std::cout;
     if (args.positional.size() != 2) throw UsageError("predict takes a model path and an image");
     const Model model(args.positional[0]);
     if (model.input_features() != kMnistSide * kMnistSide) {
@@ -359,26 +365,26 @@ int cmd_predict(int argc, char** argv) {
     }
 
     const GrayImage original = load_grayscale_image(args.positional[1]);
-    std::cout << "Image: " << args.positional[1] << " (" << original.width << "x" << original.height
-              << ")\n";
+    out << "Image: " << args.positional[1] << " (" << original.width << "x" << original.height
+        << ")\n";
 
     GrayImage input;
     if (args.has("--no-preprocess")) {
         input = resize_only(original, kMnistSide);
-        std::cout << "Preprocessing: none (resized to 28x28 only)\n";
+        out << "Preprocessing: none (resized to 28x28 only)\n";
     } else {
         const PreprocessResult result = mnist_preprocess(original);
         input = result.image;
-        std::cout << "Preprocessing: " << (result.inverted ? "inverted (light background), " : "");
+        out << "Preprocessing: " << (result.inverted ? "inverted (light background), " : "");
         if (result.box) {
-            std::cout << "cropped to " << result.box->width() << "x" << result.box->height()
-                      << " at (" << result.box->x0 << ", " << result.box->y0
-                      << "), scaled to fit 20x20, centered by mass in 28x28\n";
+            out << "cropped to " << result.box->width() << "x" << result.box->height() << " at ("
+                << result.box->x0 << ", " << result.box->y0
+                << "), scaled to fit 20x20, centered by mass in 28x28\n";
         } else {
-            std::cout << "no digit found (image is empty after thresholding)\n";
+            out << "no digit found (image is empty after thresholding)\n";
         }
     }
-    if (args.has("--show")) print_ascii(input);
+    if (args.has("--show") && !as_json) print_ascii(input);
 
     const Tensor probs = model.predict(to_model_input(input));  // {1, 10}
     std::vector<std::size_t> order(probs.size(1));
@@ -386,10 +392,20 @@ int cmd_predict(int argc, char** argv) {
     std::sort(order.begin(), order.end(),
               [&](std::size_t a, std::size_t b) { return probs.at({0, a}) > probs.at({0, b}); });
 
-    std::cout << "Predicted digit: " << order[0] << '\n' << "Top 3:\n";
+    if (as_json) {
+        nlohmann::json result;
+        result["prediction"] = order[0];
+        result["preprocessed"] = !args.has("--no-preprocess");
+        result["probabilities"] = nlohmann::json::array();
+        for (std::size_t c = 0; c < probs.size(1); ++c)
+            result["probabilities"].push_back(probs.at({0, c}));
+        result["input28"] = input.pixels;
+        std::cout << result.dump() << '\n';
+        return 0;
+    }
+    out << "Predicted digit: " << order[0] << '\n' << "Top 3:\n";
     for (std::size_t i = 0; i < 3 && i < order.size(); ++i) {
-        std::cout << "  " << order[i] << "  " << std::setw(7) << percent(probs.at({0, order[i]}))
-                  << '\n';
+        out << "  " << order[i] << "  " << std::setw(7) << percent(probs.at({0, order[i]})) << '\n';
     }
     return 0;
 }
