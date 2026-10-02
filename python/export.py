@@ -32,7 +32,7 @@ def to_numpy(t: torch.Tensor) -> np.ndarray:
 
 def build_nawa_model(model: MnistMLP) -> nf.Model:
     def linear(layer: torch.nn.Linear) -> nf.Linear:
-        # PyTorch stores {out, in}; our engine expects {in, out}, so transpose.
+        # PyTorch stores {out, in}; our engine expects {in, out}, so transpose.sss
         return nf.Linear(weight=to_numpy(layer.weight.T), bias=to_numpy(layer.bias))
 
     return nf.Model(
